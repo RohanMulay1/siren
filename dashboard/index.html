@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>SIREN — Incident Response Engine</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+tailwind.config = {
+  darkMode: "class",
+  theme: {
+    extend: {
+      colors: {
+        "error": "#ffb4ab",
+        "on-error": "#690005",
+        "secondary-fixed": "#eddcff",
+        "surface-container-lowest": "#060f16",
+        "on-background": "#dae3ee",
+        "on-primary-container": "#003a6b",
+        "on-secondary-container": "#cda8ff",
+        "primary-container": "#58a6ff",
+        "outline-variant": "#414752",
+        "surface-container-high": "#222b33",
+        "on-primary": "#00315c",
+        "surface": "#0b141c",
+        "tertiary-container": "#da9600",
+        "on-surface-variant": "#c0c7d4",
+        "background": "#0b141c",
+        "outline": "#8b919d",
+        "on-tertiary": "#432c00",
+        "surface-container": "#182028",
+        "primary-fixed-dim": "#a2c9ff",
+        "on-secondary": "#430882",
+        "secondary-container": "#5d2d9c",
+        "on-error-container": "#ffdad6",
+        "tertiary": "#ffba42",
+        "secondary": "#d8baff",
+        "inverse-primary": "#0060aa",
+        "inverse-surface": "#dae3ee",
+        "primary": "#a2c9ff",
+        "error-container": "#93000a",
+        "surface-variant": "#2d363e",
+        "inverse-on-surface": "#29313a",
+        "surface-container-highest": "#2d363e",
+        "surface-container-low": "#141c24",
+        "tertiary-fixed-dim": "#ffba42"
+      },
+      fontFamily: {
+        "body-md": ["Inter"],
+        "label-sm": ["JetBrains Mono"],
+        "label-md": ["JetBrains Mono"],
+        "headline-lg": ["Inter"],
+        "headline-md": ["Inter"],
+        "body-sm": ["Inter"]
+      },
+      fontSize: {
+        "body-md": ["14px", { lineHeight: "20px", fontWeight: "400" }],
+        "label-sm": ["11px", { lineHeight: "14px", letterSpacing: "0.03em", fontWeight: "500" }],
+        "headline-lg": ["24px", { lineHeight: "32px", letterSpacing: "-0.02em", fontWeight: "600" }],
+        "headline-md": ["18px", { lineHeight: "24px", letterSpacing: "-0.01em", fontWeight: "600" }],
+        "label-md": ["12px", { lineHeight: "16px", letterSpacing: "0.02em", fontWeight: "500" }],
+        "body-sm": ["13px", { lineHeight: "18px", fontWeight: "400" }]
+      }
+    }
+  }
+}
+</script>
+<style>
+  body { background-color: #0D1117; color: #dae3ee; }
+
+  .pulse-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background-color: #ffb4ab; position: relative; flex-shrink: 0;
+  }
+  .pulse-dot::before {
+    content: ''; position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 24px; height: 24px; border-radius: 50%;
+    background-color: #ffb4ab; opacity: 0.2;
+    animation: pulse 2s infinite;
+  }
+  .pulse-dot.green { background-color: #4ade80; }
+  .pulse-dot.green::before { background-color: #4ade80; }
+
+  @keyframes pulse {
+    0%   { transform: translate(-50%,-50%) scale(0.5); opacity: 0.4; }
+    100% { transform: translate(-50%,-50%) scale(1.5); opacity: 0; }
+  }
+
+  .stepper-line { height: 2px; flex-grow: 1; background-color: #21262D; margin: 0 2px; }
+  .stepper-line.active { background-color: #58a6ff; }
+  .stepper-node { width: 10px; height: 10px; border-radius: 50%; background-color: #21262D; flex-shrink: 0; }
+  .stepper-node.complete { background-color: #58a6ff; }
+  .stepper-node.current { background-color: #ffba42; box-shadow: 0 0 0 4px rgba(255,186,66,0.2); }
+
+  .panel-level-1 { background-color: #161B22; border: 1px solid #21262D; }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #0D1117; }
+  ::-webkit-scrollbar-thumb { background: #21262D; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #414752; }
+
+  .status-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+  .status-complete { color: #4ade80; }
+  .status-investigating, .status-recalling { color: #a2c9ff; }
+  .status-awaiting_approval { color: #ffba42; }
+  .status-executing, .status-planning { color: #ffba42; }
+  .status-escalated { color: #ffb4ab; }
+  .status-triaging, .status-verifying { color: #c0c7d4; }
+  .status-writing_postmortem { color: #4ade80; }
+
+  #mttr-chart-container { position: relative; }
+  .selected-row { background-color: #1C2128 !important; border-left: 2px solid #a2c9ff; }
+</style>
+</head>
+<body class="font-body-md text-body-md h-screen flex flex-col overflow-hidden">
+
+<!-- Top Nav -->
+<nav class="bg-surface-container h-[60px] w-full sticky top-0 z-50 border-b border-outline-variant flex items-center justify-between px-6 flex-shrink-0">
+  <div class="flex items-center gap-3">
+    <span class="text-error text-xl font-bold">🚨</span>
+    <span class="font-headline-md text-headline-md text-on-surface">SIREN</span>
+    <span class="font-label-sm text-label-sm text-on-surface-variant ml-1">Self-Improving Incident Response Engine</span>
+  </div>
+  <div class="flex items-center gap-6 font-label-sm text-label-sm">
+    <div id="api-status" class="flex items-center gap-2 text-on-surface-variant">
+      <span class="material-symbols-outlined text-[16px] text-outline">radio_button_checked</span>
+      Connecting…
+    </div>
+    <div id="qdrant-count" class="flex items-center gap-2 text-on-surface-variant">
+      <span class="material-symbols-outlined text-[16px]">database</span>
+      Qdrant: —
+    </div>
+    <div class="px-3 py-1 bg-surface-variant rounded-full border border-outline-variant flex items-center gap-2">
+      <div id="system-dot" class="pulse-dot"></div>
+      <span id="system-label" class="text-error">SYSTEM ACTIVE</span>
+    </div>
+  </div>
+</nav>
+
+<!-- Main Content -->
+<main class="flex-grow px-6 py-4 overflow-y-auto flex flex-col gap-4">
+
+  <!-- ROW 1: Stat Cards -->
+  <div class="grid grid-cols-4 gap-4 flex-shrink-0">
+    <div class="panel-level-1 rounded p-4 flex flex-col justify-between relative overflow-hidden hover:border-error transition-colors">
+      <div class="absolute left-0 top-0 bottom-0 w-1 bg-error"></div>
+      <div class="font-label-md text-label-md text-on-surface-variant uppercase pl-1">Active Incidents</div>
+      <div class="flex items-end gap-3 pl-1">
+        <div id="stat-active" class="font-headline-lg text-headline-lg text-error">—</div>
+        <div id="stat-active-sev" class="font-label-sm text-label-sm text-error bg-[#ffb4ab1a] px-2 py-0.5 rounded mb-1"></div>
+      </div>
+    </div>
+    <div class="panel-level-1 rounded p-4 flex flex-col justify-between hover:border-primary transition-colors">
+      <div class="font-label-md text-label-md text-on-surface-variant uppercase">Avg MTTR Today</div>
+      <div class="flex items-end justify-between w-full">
+        <div class="flex items-baseline gap-1">
+          <span id="stat-mttr" class="font-headline-lg text-headline-lg text-on-surface">—</span>
+          <span class="font-label-sm text-label-sm text-on-surface-variant">min</span>
+        </div>
+        <div id="stat-mttr-delta" class="flex items-center font-label-sm text-label-sm mb-1"></div>
+      </div>
+    </div>
+    <div class="panel-level-1 rounded p-4 flex flex-col justify-between relative overflow-hidden hover:border-secondary transition-colors">
+      <div class="absolute left-0 top-0 bottom-0 w-1 bg-secondary-container"></div>
+      <div class="font-label-md text-label-md text-on-surface-variant uppercase pl-1">Incidents in Memory</div>
+      <div class="flex items-end gap-3 pl-1">
+        <div id="stat-memory" class="font-headline-lg text-headline-lg text-secondary">—</div>
+        <div class="font-label-sm text-label-sm text-secondary bg-[#cda8ff1a] px-2 py-0.5 rounded mb-1 flex items-center gap-1">
+          <span class="material-symbols-outlined text-[14px]">memory</span> Qdrant
+        </div>
+      </div>
+    </div>
+    <div class="panel-level-1 rounded p-4 flex flex-col justify-between hover:border-primary transition-colors">
+      <div class="font-label-md text-label-md text-on-surface-variant uppercase">Auto-Resolved</div>
+      <div class="flex items-end justify-between w-full">
+        <div id="stat-resolved" class="font-headline-lg text-headline-lg text-on-surface">—</div>
+        <div id="stat-resolved-pct" class="font-label-sm text-label-sm text-[#4ade80] mb-1"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 2: Incident Feed & Detail -->
+  <div class="grid grid-cols-12 gap-4 flex-shrink-0" style="height:380px;">
+    <!-- Incident Table (8/12) -->
+    <div class="col-span-8 panel-level-1 rounded flex flex-col overflow-hidden">
+      <div class="p-4 border-b border-[#21262D] flex items-center justify-between bg-surface-container-low flex-shrink-0">
+        <div class="flex items-center gap-3">
+          <div class="pulse-dot"></div>
+          <h2 class="font-headline-md text-headline-md text-on-surface">Live Incidents</h2>
+        </div>
+        <div class="flex items-center gap-3">
+          <button id="fire-btn" onclick="fireIncident()" class="bg-error text-on-error font-label-md text-label-md font-bold px-4 py-1.5 rounded hover:opacity-90 transition-opacity flex items-center gap-1.5 shadow-lg shadow-error/20">
+            <span class="material-symbols-outlined text-[16px]">local_fire_department</span>
+            Fire Demo
+          </button>
+          <span id="fire-status" class="font-label-sm text-label-sm text-on-surface-variant"></span>
+        </div>
+      </div>
+      <div class="overflow-auto flex-grow">
+        <table class="w-full text-left font-body-sm text-body-sm border-collapse">
+          <thead class="bg-[#1C2128] sticky top-0 z-10 border-b border-[#21262D]">
+            <tr>
+              <th class="px-4 py-2 font-label-md text-label-md text-on-surface-variant uppercase tracking-wider font-normal">Sev</th>
+              <th class="px-4 py-2 font-label-md text-label-md text-on-surface-variant uppercase tracking-wider font-normal">Incident ID</th>
+              <th class="px-4 py-2 font-label-md text-label-md text-on-surface-variant uppercase tracking-wider font-normal">Service</th>
+              <th class="px-4 py-2 font-label-md text-label-md text-on-surface-variant uppercase tracking-wider font-normal">Status</th>
+              <th class="px-4 py-2 font-label-md text-label-md text-on-surface-variant uppercase tracking-wider font-normal">Root Cause</th>
+              <th class="px-4 py-2 font-label-md text-label-md text-on-surface-variant uppercase tracking-wider font-normal">MTTR</th>
+            </tr>
+          </thead>
+          <tbody id="incidents-tbody" class="divide-y divide-[#21262D]">
+            <tr><td colspan="6" class="px-4 py-6 text-center text-on-surface-variant">Loading incidents…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Detail Panel (4/12) -->
+    <div id="detail-panel" class="col-span-4 panel-level-1 rounded p-5 flex flex-col gap-4 overflow-y-auto">
+      <div class="flex flex-col items-center justify-center h-full text-on-surface-variant text-center gap-3 opacity-40">
+        <span class="material-symbols-outlined text-[48px]">arrow_back</span>
+        <span class="font-label-md text-label-md">Click an incident to view details</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 3: Charts -->
+  <div class="grid grid-cols-2 gap-4 flex-grow min-h-[280px]">
+    <!-- MTTR Chart -->
+    <div class="panel-level-1 rounded p-4 flex flex-col">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-label-md text-label-md text-on-surface-variant uppercase">MTTR Self-Improvement — Qdrant Memory Effect</h3>
+        <div id="mttr-improvement-badge" class="hidden bg-surface-container-high border border-[#21262D] px-3 py-1.5 rounded font-label-sm text-label-sm text-[#4ade80] flex items-center gap-2">
+          📉 <span id="mttr-improvement-text"></span>
+        </div>
+      </div>
+      <div id="mttr-chart-container" class="flex-grow relative min-h-[180px]">
+        <canvas id="mttr-chart"></canvas>
+      </div>
+    </div>
+
+    <!-- Memory Breakdown -->
+    <div class="panel-level-1 rounded p-4 flex flex-col">
+      <h3 class="font-label-md text-label-md text-on-surface-variant uppercase mb-3">Incident Memory (Qdrant)</h3>
+      <div class="flex gap-6 flex-grow items-center">
+        <!-- Donut -->
+        <div class="w-1/2 flex justify-center items-center relative" style="height:180px;">
+          <canvas id="donut-chart"></canvas>
+          <div id="donut-center" class="absolute flex flex-col items-center pointer-events-none">
+            <span id="donut-total" class="font-headline-md text-headline-md text-on-surface">—</span>
+            <span class="font-label-sm text-label-sm text-outline">Total</span>
+          </div>
+        </div>
+        <!-- Service Bars -->
+        <div id="service-bars" class="w-1/2 flex flex-col justify-center gap-3 font-label-sm text-label-sm">
+          <div class="text-on-surface-variant text-center">Loading…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="flex items-center justify-between py-2 border-t border-[#21262D] flex-shrink-0">
+    <div class="flex items-center gap-4">
+      <label class="flex items-center gap-2 font-label-sm text-label-sm text-on-surface cursor-pointer select-none">
+        <input type="checkbox" id="auto-refresh" checked class="accent-primary w-3 h-3"/>
+        Auto-refresh every 8s
+      </label>
+    </div>
+    <div id="last-updated" class="text-outline font-mono font-label-sm text-label-sm">—</div>
+  </div>
+
+</main>
+
+<script>
+const API = 'http://localhost:8000';
+let selectedIncident = null;
+let mttrChart = null;
+let donutChart = null;
+let refreshTimer = null;
+
+// ── SEV / STATUS styling ─────────────────────────────────────────────────────
+
+const SEV_HTML = {
+  P1: `<span class="bg-error text-on-error font-label-sm text-label-sm px-2 py-0.5 rounded">P1</span>`,
+  P2: `<span class="border border-tertiary text-tertiary font-label-sm text-label-sm px-2 py-0.5 rounded">P2</span>`,
+  P3: `<span class="border border-tertiary-container text-tertiary-container font-label-sm text-label-sm px-2 py-0.5 rounded">P3</span>`,
+  P4: `<span class="border border-outline text-outline font-label-sm text-label-sm px-2 py-0.5 rounded">P4</span>`,
+};
+
+const STATUS_HTML = {
+  complete:         `<span class="status-badge status-complete"><span class="material-symbols-outlined text-[14px]">check_circle</span> COMPLETE</span>`,
+  escalated:        `<span class="status-badge status-escalated"><span class="material-symbols-outlined text-[14px]">warning</span> ESCALATED</span>`,
+  investigating:    `<span class="status-badge status-investigating"><span class="material-symbols-outlined text-[14px]">science</span> INVESTIGATING</span>`,
+  recalling:        `<span class="status-badge status-recalling"><span class="material-symbols-outlined text-[14px]">memory</span> RECALLING</span>`,
+  awaiting_approval:`<span class="status-badge status-awaiting_approval animate-pulse"><span class="material-symbols-outlined text-[14px]">pending</span> AWAITING APPROVAL</span>`,
+  executing:        `<span class="status-badge status-executing animate-pulse"><span class="material-symbols-outlined text-[14px]">settings</span> EXECUTING</span>`,
+  planning:         `<span class="status-badge status-planning"><span class="material-symbols-outlined text-[14px]">edit_note</span> PLANNING</span>`,
+  triaging:         `<span class="status-badge status-triaging"><span class="material-symbols-outlined text-[14px]">manage_search</span> TRIAGING</span>`,
+  verifying:        `<span class="status-badge status-verifying"><span class="material-symbols-outlined text-[14px]">fact_check</span> VERIFYING</span>`,
+  writing_postmortem:`<span class="status-badge status-writing_postmortem"><span class="material-symbols-outlined text-[14px]">edit_document</span> POSTMORTEM</span>`,
+};
+
+function statusHtml(s) {
+  return STATUS_HTML[s] || `<span class="font-label-sm text-label-sm text-on-surface-variant">${s?.toUpperCase() || '—'}</span>`;
+}
+
+// ── Fetch helpers ────────────────────────────────────────────────────────────
+
+async function apiFetch(path) {
+  try {
+    const r = await fetch(`${API}${path}`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+// ── Main refresh ─────────────────────────────────────────────────────────────
+
+async function refresh() {
+  const [health, incidents, memStats] = await Promise.all([
+    apiFetch('/health'),
+    apiFetch('/api/incidents?limit=20'),
+    apiFetch('/api/memory/stats'),
+  ]);
+
+  updateHeader(health);
+  updateStatCards(incidents, memStats);
+  updateIncidentTable(incidents || []);
+  updateCharts(memStats);
+  if (selectedIncident) updateDetailPanel(selectedIncident);
+
+  document.getElementById('last-updated').textContent =
+    `Last updated: ${new Date().toUTCString().split(' ')[4]} UTC`;
+}
+
+function updateHeader(health) {
+  const el = document.getElementById('api-status');
+  const qdEl = document.getElementById('qdrant-count');
+  if (health) {
+    el.innerHTML = `<span class="material-symbols-outlined text-[16px] text-[#4ade80]">radio_button_checked</span> API Online`;
+    qdEl.innerHTML = `<span class="material-symbols-outlined text-[16px]">database</span> Qdrant: ${health.qdrant_incidents} incidents`;
+  } else {
+    el.innerHTML = `<span class="material-symbols-outlined text-[16px] text-error">radio_button_checked</span> API Offline`;
+    document.getElementById('system-dot').classList.remove('green');
+    document.getElementById('system-label').textContent = 'OFFLINE';
+    document.getElementById('system-label').className = 'text-outline';
+  }
+}
+
+function updateStatCards(incidents, memStats) {
+  if (!incidents) return;
+  const active = incidents.filter(i => !['complete','escalated'].includes(i.workflow_status));
+  const resolved = incidents.filter(i => i.workflow_status === 'complete');
+  const p1Active = active.filter(i => i.severity === 'P1');
+
+  document.getElementById('stat-active').textContent = active.length;
+  document.getElementById('stat-active-sev').textContent = p1Active.length > 0 ? `${p1Active.length} P1 CRITICAL` : active.length > 0 ? 'IN PROGRESS' : 'ALL CLEAR';
+
+  document.getElementById('stat-resolved').textContent = `${resolved.length}/${incidents.length}`;
+  const pct = incidents.length > 0 ? Math.round(resolved.length / incidents.length * 100) : 0;
+  document.getElementById('stat-resolved-pct').textContent = `${pct}% resolved`;
+
+  if (memStats) {
+    document.getElementById('stat-memory').textContent = memStats.total;
+    const series = memStats.mttr_series || [];
+    if (series.length > 0) {
+      const avg = series.reduce((s, x) => s + x.mttr, 0) / series.length;
+      document.getElementById('stat-mttr').textContent = avg.toFixed(1);
+      if (series.length >= 4) {
+        const half = Math.floor(series.length / 2);
+        const first = series.slice(0, half).reduce((s, x) => s + x.mttr, 0) / half;
+        const last = series.slice(-half).reduce((s, x) => s + x.mttr, 0) / half;
+        const delta = first - last;
+        const pctDelta = first > 0 ? (delta / first * 100) : 0;
+        const color = delta > 0 ? '#4ade80' : '#ffb4ab';
+        const arrow = delta > 0 ? 'arrow_downward' : 'arrow_upward';
+        document.getElementById('stat-mttr-delta').innerHTML =
+          `<span class="flex items-center gap-1 px-2 py-0.5 rounded" style="color:${color};background:${color}1a">
+            <span class="material-symbols-outlined text-[14px]">${arrow}</span>
+            ${Math.abs(pctDelta).toFixed(0)}% vs first half
+          </span>`;
+      }
+    }
+  }
+}
+
+function updateIncidentTable(incidents) {
+  const tbody = document.getElementById('incidents-tbody');
+  if (!incidents.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="px-4 py-6 text-center text-on-surface-variant">No incidents yet — click <strong>Fire Demo</strong> to start.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = incidents.map(inc => {
+    const mttr = inc.resolved_at && inc.created_at
+      ? ((new Date(inc.resolved_at) - new Date(inc.created_at)) / 60000).toFixed(1) + ' min'
+      : '—';
+    const isSelected = selectedIncident === inc.incident_id;
+    return `<tr class="${isSelected ? 'selected-row' : 'hover:bg-[#1C2128]'} transition-colors cursor-pointer" onclick="selectIncident('${inc.incident_id}')">
+      <td class="px-4 py-3">${SEV_HTML[inc.severity] || inc.severity}</td>
+      <td class="px-4 py-3 font-label-sm text-label-sm text-on-surface">${inc.incident_id.substring(0,24)}…</td>
+      <td class="px-4 py-3 font-label-sm text-label-sm text-on-surface-variant">${inc.affected_service || '—'}</td>
+      <td class="px-4 py-3">${statusHtml(inc.workflow_status)}</td>
+      <td class="px-4 py-3 text-on-surface-variant truncate max-w-[140px]">${(inc.root_cause || '—').substring(0,60)}</td>
+      <td class="px-4 py-3 font-label-sm text-label-sm">${mttr}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function selectIncident(id) {
+  selectedIncident = id;
+  updateIncidentTable(await apiFetch('/api/incidents?limit=20') || []);
+  updateDetailPanel(id);
+}
+
+async function updateDetailPanel(id) {
+  const state = await apiFetch(`/api/incidents/${id}`);
+  const panel = document.getElementById('detail-panel');
+  if (!state) {
+    panel.innerHTML = `<div class="text-on-surface-variant text-sm text-center mt-8">Incident not found or still initializing…</div>`;
+    return;
+  }
+
+  const status = state.workflow_status || 'unknown';
+  const sev = state.severity || 'P1';
+  const plan = state.action_plan || [];
+  const idx = state.current_action_index || 0;
+
+  // Pipeline steps
+  const STEPS = ['ingesting','triaging','recalling','investigating','planning','awaiting_approval','executing','verifying','writing_postmortem','complete'];
+  const STEP_LABELS = ['INGEST','TRIAGE','RECALL','INVEST.','PLAN','APPROVE','EXEC','VERIFY','POSTMORTEM','DONE'];
+  const curIdx = STEPS.indexOf(status);
+
+  const stepperHtml = STEPS.map((step, i) => {
+    const done = i < curIdx || status === 'complete';
+    const cur = i === curIdx && status !== 'complete';
+    const nodeClass = done ? 'complete' : cur ? 'current' : '';
+    const labelColor = done ? 'text-[#4ade80]' : cur ? 'text-tertiary' : 'text-outline';
+    const lineClass = i < STEPS.length - 1 ? (i < curIdx ? 'active' : '') : '';
+    return `
+      <div class="flex flex-col items-center gap-1 flex-shrink-0" style="min-width:40px">
+        <div class="stepper-node ${nodeClass}"></div>
+        <span class="font-label-sm text-[9px] ${labelColor} text-center">${STEP_LABELS[i]}</span>
+      </div>
+      ${i < STEPS.length - 1 ? `<div class="stepper-line ${lineClass}"></div>` : ''}
+    `;
+  }).join('');
+
+  // Action plan
+  const TIER_ICON = { READ: 'visibility', REVERSIBLE: 'sync', DESTRUCTIVE: 'local_fire_department' };
+  const planHtml = plan.length === 0
+    ? `<div class="text-on-surface-variant text-xs">No actions planned yet.</div>`
+    : plan.map((a, i) => {
+        let badge, badgeClass, iconClass;
+        if (a.approved === true) { badge = 'APPROVED'; badgeClass = 'text-[#4ade80]'; iconClass = 'check_circle'; }
+        else if (a.approved === false) { badge = 'REJECTED'; badgeClass = 'text-error'; iconClass = 'cancel'; }
+        else if (i < idx) { badge = 'EXECUTED'; badgeClass = 'text-[#4ade80]'; iconClass = 'check_circle'; }
+        else if (i === idx && status === 'awaiting_approval') { badge = 'AWAITING'; badgeClass = 'text-tertiary animate-pulse'; iconClass = 'pending'; }
+        else { badge = 'PENDING'; badgeClass = 'text-outline'; iconClass = 'radio_button_unchecked'; }
+        const tierIcon = TIER_ICON[a.classification] || 'help';
+        const highlight = i === idx && status === 'awaiting_approval';
+        return `<li class="flex items-center gap-2 p-2 rounded border ${highlight ? 'border-tertiary bg-[#ffba421a]' : 'border-[#21262D] bg-surface-container-low'}">
+          <span class="material-symbols-outlined text-[14px] ${badgeClass}">${iconClass}</span>
+          <span class="font-mono text-[11px] text-on-surface flex-grow">${a.tool_name}</span>
+          <span class="material-symbols-outlined text-[12px] text-on-surface-variant">${tierIcon}</span>
+        </li>`;
+      }).join('');
+
+  // Confidence bar
+  const conf = state.root_cause_confidence || 0;
+
+  // Approve button (show only when awaiting)
+  const approveHtml = status === 'awaiting_approval'
+    ? `<div class="flex gap-2 mt-2">
+        <button onclick="approveAction('${id}', true)" class="flex-1 bg-[#4ade801a] border border-[#4ade80] text-[#4ade80] font-label-md text-label-md py-2 rounded hover:bg-[#4ade8030] transition-colors flex items-center justify-center gap-1">
+          <span class="material-symbols-outlined text-[16px]">check</span> APPROVE
+        </button>
+        <button onclick="approveAction('${id}', false)" class="flex-1 bg-[#ffb4ab1a] border border-error text-error font-label-md text-label-md py-2 rounded hover:bg-[#ffb4ab30] transition-colors flex items-center justify-center gap-1">
+          <span class="material-symbols-outlined text-[16px]">close</span> REJECT
+        </button>
+      </div>`
+    : '';
+
+  panel.innerHTML = `
+    <div class="flex justify-between items-start">
+      <div>
+        <div class="flex items-center gap-2 mb-1">
+          ${SEV_HTML[sev] || sev}
+          <span class="font-label-md text-label-md text-on-surface-variant">${id.substring(0,22)}…</span>
+        </div>
+        <h3 class="font-headline-md text-headline-md text-on-surface">${(state.incident_summary || 'Incident').substring(0, 60)}</h3>
+      </div>
+      <button onclick="deselectIncident()" class="text-outline hover:text-on-surface">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    ${state.root_cause ? `
+    <div>
+      <div class="flex justify-between font-label-sm text-label-sm mb-1.5">
+        <span class="text-on-surface-variant">Root Cause Confidence</span>
+        <span class="text-primary">${(conf * 100).toFixed(0)}%</span>
+      </div>
+      <div class="w-full bg-[#21262D] h-1.5 rounded-full overflow-hidden">
+        <div class="bg-primary h-full rounded-full" style="width:${(conf*100).toFixed(0)}%"></div>
+      </div>
+      <div class="mt-1.5 font-label-sm text-label-sm text-on-surface-variant">${state.root_cause.substring(0, 100)}</div>
+    </div>` : ''}
+    <div>
+      <div class="font-label-md text-label-md text-on-surface-variant uppercase mb-2">Pipeline</div>
+      <div class="flex items-center w-full overflow-x-auto pb-2">${stepperHtml}</div>
+    </div>
+    <div class="flex-grow overflow-y-auto">
+      <div class="font-label-md text-label-md text-on-surface-variant uppercase mb-2">Action Plan</div>
+      <ul class="space-y-2 font-label-sm text-label-sm">${planHtml}</ul>
+      ${approveHtml}
+    </div>
+  `;
+}
+
+function deselectIncident() {
+  selectedIncident = null;
+  document.getElementById('detail-panel').innerHTML = `
+    <div class="flex flex-col items-center justify-center h-full text-on-surface-variant text-center gap-3 opacity-40">
+      <span class="material-symbols-outlined text-[48px]">arrow_back</span>
+      <span class="font-label-md text-label-md">Click an incident to view details</span>
+    </div>`;
+}
+
+// ── Charts ───────────────────────────────────────────────────────────────────
+
+function updateCharts(memStats) {
+  if (!memStats) return;
+
+  // MTTR scatter
+  const series = (memStats.mttr_series || []).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  const mttrEl = document.getElementById('mttr-chart');
+
+  if (mttrEl) {
+    if (mttrChart) mttrChart.destroy();
+    const labels = series.map((_, i) => i + 1);
+    const data = series.map(x => x.mttr);
+    const COLORS = { oom: '#ffb4ab', connection_pool: '#a2c9ff', deploy_regression: '#ffba42', disk_saturation: '#d8baff', other: '#8b919d' };
+    const bgColors = series.map(x => COLORS[x.category] || '#8b919d');
+
+    // Simple linear regression for trendline
+    let trendData = [];
+    if (data.length >= 2) {
+      const n = data.length;
+      const sumX = labels.reduce((s, x) => s + x, 0);
+      const sumY = data.reduce((s, y) => s + y, 0);
+      const sumXY = labels.reduce((s, x, i) => s + x * data[i], 0);
+      const sumXX = labels.reduce((s, x) => s + x * x, 0);
+      const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+      const intercept = (sumY - slope * sumX) / n;
+      trendData = labels.map(x => slope * x + intercept);
+    }
+
+    mttrChart = new Chart(mttrEl, {
+      type: 'scatter',
+      data: {
+        datasets: [
+          {
+            label: 'MTTR (min)',
+            data: labels.map((x, i) => ({ x, y: data[i] })),
+            backgroundColor: bgColors,
+            pointRadius: 6,
+            pointHoverRadius: 8,
+          },
+          ...(trendData.length ? [{
+            label: 'Trend',
+            data: labels.map((x, i) => ({ x, y: trendData[i] })),
+            type: 'line',
+            borderColor: '#4ade80',
+            borderDash: [4, 4],
+            borderWidth: 1.5,
+            pointRadius: 0,
+            fill: false,
+          }] : []),
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const pt = series[ctx.dataIndex];
+                return pt ? `${pt.service} | ${pt.mttr.toFixed(1)}m | ${pt.category}` : `${ctx.parsed.y.toFixed(1)} min`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: { title: { display: true, text: 'Incident #', color: '#8b919d' }, ticks: { color: '#8b919d' }, grid: { color: '#21262D' } },
+          y: { title: { display: true, text: 'MTTR (min)', color: '#8b919d' }, ticks: { color: '#8b919d' }, grid: { color: '#21262D' } }
+        }
+      }
+    });
+
+    // Improvement badge
+    if (series.length >= 4) {
+      const half = Math.floor(series.length / 2);
+      const firstAvg = data.slice(0, half).reduce((s, v) => s + v, 0) / half;
+      const lastAvg = data.slice(-half).reduce((s, v) => s + v, 0) / half;
+      const pct = firstAvg > 0 ? ((firstAvg - lastAvg) / firstAvg * 100) : 0;
+      if (pct > 0) {
+        document.getElementById('mttr-improvement-text').textContent = `${pct.toFixed(0)}% faster after ${half} incidents in memory`;
+        document.getElementById('mttr-improvement-badge').classList.remove('hidden');
+        document.getElementById('mttr-improvement-badge').classList.add('flex');
+      }
+    }
+  }
+
+  // Donut chart (categories)
+  const cats = memStats.categories || {};
+  const catLabels = Object.keys(cats);
+  const catValues = Object.values(cats);
+  const DONUT_COLORS = ['#ffb4ab', '#a2c9ff', '#ffba42', '#d8baff', '#4ade80', '#8b919d'];
+  const donutEl = document.getElementById('donut-chart');
+  document.getElementById('donut-total').textContent = memStats.total;
+
+  if (donutEl && catLabels.length) {
+    if (donutChart) donutChart.destroy();
+    donutChart = new Chart(donutEl, {
+      type: 'doughnut',
+      data: {
+        labels: catLabels,
+        datasets: [{ data: catValues, backgroundColor: DONUT_COLORS.slice(0, catLabels.length), borderWidth: 0 }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '70%',
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.label}: ${c.raw}` } } }
+      }
+    });
+  }
+
+  // Service bars
+  const svcs = memStats.services || {};
+  const svcEntries = Object.entries(svcs).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const maxSvc = Math.max(...svcEntries.map(([, v]) => v), 1);
+  const BAR_COLORS = ['#ffb4ab', '#ffba42', '#a2c9ff', '#d8baff', '#4ade80'];
+  document.getElementById('service-bars').innerHTML = svcEntries.map(([svc, cnt], i) => `
+    <div>
+      <div class="flex justify-between mb-1">
+        <span class="text-on-surface truncate max-w-[120px]">${svc}</span>
+        <span class="text-outline ml-2">${cnt}</span>
+      </div>
+      <div class="w-full bg-[#21262D] h-1.5 rounded-full overflow-hidden">
+        <div class="h-full rounded-full" style="width:${(cnt/maxSvc*100).toFixed(0)}%;background:${BAR_COLORS[i % BAR_COLORS.length]}"></div>
+      </div>
+    </div>`).join('');
+}
+
+// ── Actions ──────────────────────────────────────────────────────────────────
+
+async function fireIncident() {
+  const btn = document.getElementById('fire-btn');
+  const statusEl = document.getElementById('fire-status');
+  btn.disabled = true;
+  btn.classList.add('opacity-60');
+  statusEl.textContent = 'Firing…';
+
+  try {
+    const r = await fetch(`${API}/webhook/alert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: 'custom',
+        alert_name: 'RedisOOM',
+        severity: 'P1',
+        service: 'payments-api',
+        description: 'Redis out of memory — OOM command not allowed when used memory > maxmemory. payments-api error rate 45%, p99 latency 8.4s. Restart count: 3.',
+        labels: { env: 'production', region: 'us-east-1', team: 'payments' }
+      })
+    });
+    const data = await r.json();
+    statusEl.textContent = `Created: ${data.incident_id}`;
+    selectedIncident = data.incident_id;
+    setTimeout(() => refresh(), 500);
+  } catch (e) {
+    statusEl.textContent = `Error: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('opacity-60');
+  }
+}
+
+async function approveAction(incidentId, approved) {
+  try {
+    await fetch(`${API}/api/incidents/${incidentId}/approve?approved=${approved}`, { method: 'POST' });
+    setTimeout(() => updateDetailPanel(incidentId), 1000);
+  } catch (e) {
+    alert('Failed: ' + e.message);
+  }
+}
+
+// ── Auto-refresh loop ────────────────────────────────────────────────────────
+
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  if (document.getElementById('auto-refresh').checked) {
+    refreshTimer = setTimeout(async () => {
+      await refresh();
+      scheduleRefresh();
+    }, 8000);
+  }
+}
+
+document.getElementById('auto-refresh').addEventListener('change', () => {
+  if (document.getElementById('auto-refresh').checked) {
+    refresh().then(scheduleRefresh);
+  } else {
+    clearTimeout(refreshTimer);
+  }
+});
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+
+refresh().then(scheduleRefresh);
+</script>
+</body>
+</html>

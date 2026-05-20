@@ -1,13 +1,14 @@
 import structlog
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .memory import get_qdrant_client, ensure_collection
 from .db.session import create_tables
 from .observability.langsmith import setup_langsmith
 from .observability.otel import setup_otel
-from .api.routers import alerts, approvals, incidents, health
+from .api.routers import alerts, approvals, incidents, health, memory
 
 log = structlog.get_logger()
 
@@ -48,7 +49,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(health.router, tags=["health"])
 app.include_router(alerts.router, tags=["alerts"])
 app.include_router(approvals.router, tags=["approvals"])
 app.include_router(incidents.router, tags=["incidents"], prefix="/api")
+app.include_router(memory.router, tags=["memory"])
