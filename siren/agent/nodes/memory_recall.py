@@ -1,3 +1,4 @@
+import asyncio
 from ..state import IncidentState
 from ...memory import get_qdrant_client, recall_similar_incidents
 from ...config import get_settings
@@ -12,7 +13,9 @@ async def run(state: IncidentState) -> dict:
         f"Summary: {state['incident_summary']}."
     )
 
-    similar = recall_similar_incidents(
+    # recall_similar_incidents uses sentence-transformers (CPU-bound sync) — run in thread
+    similar = await asyncio.to_thread(
+        recall_similar_incidents,
         client=client,
         query_text=query_text,
         affected_service=state["affected_service"],

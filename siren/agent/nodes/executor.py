@@ -2,7 +2,7 @@ from datetime import datetime
 from ..state import IncidentState
 from ...tools import TOOL_REGISTRY
 from ...guardrails.rate_limiter import DestructiveActionRateLimiter
-from ...db import write_action_audit
+from ...db.writer import write_action_audit
 import redis.asyncio as aioredis
 import structlog
 

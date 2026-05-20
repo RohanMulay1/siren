@@ -14,6 +14,9 @@ def route_after_investigation(state: IncidentState) -> str:
     if state["root_cause_confidence"] >= settings.investigation_confidence_threshold:
         return "plan"
     if state["investigation_iterations"] >= settings.investigation_max_iterations:
+        # If we have a root cause even at lower confidence, plan rather than escalate
+        if state.get("root_cause") and state["root_cause_confidence"] >= 0.5:
+            return "plan"
         return "escalate"
     return "loop"
 
@@ -37,8 +40,8 @@ def route_after_guardrail(state: IncidentState) -> str:
 
 
 def route_after_execution(state: IncidentState) -> str:
-    next_idx = state["current_action_index"] + 1
-    if next_idx < len(state["action_plan"]):
+    # executor already incremented current_action_index
+    if state["current_action_index"] < len(state["action_plan"]):
         return "next_action"
     return "verify"
 

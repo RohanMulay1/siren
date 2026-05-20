@@ -19,7 +19,9 @@ class FlushRedisCache:
     }
 
     @staticmethod
-    async def execute(redis_url: str, db_index: int) -> str:
+    async def execute(redis_url: str = "redis://localhost:6379", db_index: int = 0, db: int | None = None, **kwargs) -> str:
+        if db is not None:
+            db_index = db
         try:
             import redis.asyncio as aioredis
             client = aioredis.from_url(redis_url, db=db_index)

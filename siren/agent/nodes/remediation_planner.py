@@ -50,7 +50,7 @@ async def run(state: IncidentState) -> dict:
         "Generate the remediation plan."
     )
 
-    resp = chat_complete(
+    resp = await chat_complete(
         model=settings.model_plan,
         system=PLANNER_SYSTEM,
         messages=[{"role": "user", "content": prompt}],

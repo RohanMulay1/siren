@@ -236,7 +236,7 @@ def seed():
         )
 
         vector_id = upsert_incident(qdrant, payload)
-        print(f"  [{i+1}/{len(SEED_INCIDENTS)}] {inc_data['incident_id']} → vector {vector_id[:8]}...")
+        print(f"  [{i+1}/{len(SEED_INCIDENTS)}] {inc_data['incident_id']} -> vector {vector_id[:8]}...")
 
     print(f"\nSeeding complete. Total incidents in Qdrant: {len(SEED_INCIDENTS)}")
     print("Run 'python scripts/trigger_demo.py' to fire the demo incident.")

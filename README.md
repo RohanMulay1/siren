@@ -107,8 +107,8 @@ Alert Webhook (Prometheus / PagerDuty / CloudWatch / custom)
 
 | Layer | Technology |
 |---|---|
-| **LLM** | Groq (Llama 3.3 70B Versatile + Llama 3.1 8B Instant) via OpenAI-compatible API |
-| **Workflow** | LangGraph stateful graph + Redis checkpointer (human-in-the-loop pause/resume) |
+| **LLM** | OpenRouter or Groq — Llama 3.3 70B (reasoning) + Llama 3.1 8B (fast execution) via OpenAI-compatible API |
+| **Workflow** | LangGraph stateful graph + MemorySaver checkpointer with `interrupt_after` for human-in-the-loop pause/resume |
 | **Vector Memory** | Qdrant — incident embeddings, semantic recall, self-improvement |
 | **Embeddings** | sentence-transformers `all-MiniLM-L6-v2` (local, no API cost) |
 | **API** | FastAPI + Uvicorn |
@@ -156,7 +156,7 @@ Additional layers:
 ### Prerequisites
 - Docker Desktop
 - Python 3.11+
-- A [Groq](https://console.groq.com) API key (free)
+- An [OpenRouter](https://openrouter.ai) API key (free tier available) **or** a [Groq](https://console.groq.com) API key
 - Optional: Slack app, AWS IAM user, GitHub token, LangSmith account
 
 ### 1. Clone and configure
@@ -167,9 +167,14 @@ cd siren
 cp .env.example .env
 ```
 
-Edit `.env` and fill in your keys (minimum: `GROQ_API_KEY`):
+Edit `.env` — minimum required is one LLM provider key:
 
 ```env
+# Pick one:
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-v1-...
+
+# OR:
 LLM_PROVIDER=groq
 GROQ_API_KEY=gsk_...
 
@@ -346,8 +351,8 @@ class CheckRedisMemory:
 4. **Basic Information** → **Signing Secret** → `SLACK_SIGNING_SECRET`
 5. Right-click your Slack channel → **View channel details** → copy Channel ID → `SLACK_CHANNEL_ID`
 6. Type `/invite @SIREN` in that channel
-7. Run `ngrok http 8000`, copy the HTTPS URL
-8. **Interactivity & Shortcuts** → ON → Request URL: `https://your-ngrok-url/webhook/slack/action`
+7. Expose your local server with `cloudflared tunnel --url http://localhost:8000` (or ngrok) and copy the HTTPS URL
+8. **Interactivity & Shortcuts** → ON → Request URL: `https://your-tunnel-url/webhook/slack/action`
 
 ---
 
@@ -422,7 +427,7 @@ SIREN was built for the AI Agent Awards competition and is nominated under:
 | 01 | **Best Solo Builder** | Designed, built, and shipped by one person |
 | 02 | **Most Innovative Agent** | Self-improving MTTR via Qdrant memory is genuinely novel |
 | 03 | **Most Impactful Use Case** | Production downtime costs $5,600/min (Gartner) — quantifiable ROI |
-| 06 | **Anthropic SDK Innovation** | Multi-step tool-use loops, structured handoffs, production-grade agent patterns |
+| 06 | **Best LLM Integration** | Multi-model routing (70B for reasoning, 8B for execution), multi-step tool-use loops, structured handoffs |
 | 10 | **Qdrant Vector Database Master** | Semantic incident recall is load-bearing, not decorative RAG |
 | 12 | **Enkrypt AI Secure Agent Guardrail** | Tiered action safety + injection detection on a production system |
 | 13 | **Best Open Source Contribution** | Plug-and-play tool framework, MIT licensed, free to extend |

@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select, desc
 from ...agent.graph import get_graph
-from ...db import get_session_factory, Incident
+from ...db.session import get_session_factory
+from ...db.models import Incident
 from ...config import get_settings
 
 router = APIRouter()

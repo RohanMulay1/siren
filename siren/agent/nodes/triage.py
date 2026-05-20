@@ -34,7 +34,7 @@ async def run(state: IncidentState) -> dict:
         f"Raw alert: {json.dumps(raw, default=str)[:2000]}"
     )
 
-    resp = chat_complete(
+    resp = await chat_complete(
         model=settings.model_triage,
         system=TRIAGE_SYSTEM,
         messages=[{"role": "user", "content": prompt}],

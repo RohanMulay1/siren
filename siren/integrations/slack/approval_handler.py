@@ -50,26 +50,24 @@ async def handle_slack_action(body: bytes, redis_client) -> dict:
             log.warning("state_not_found", incident_id=incident_id)
             return {"response_action": "clear"}
 
-        # Find the pending action and update its approval status
-        plan = list(current_state.values.get("action_plan", []))
-        updated = False
-        for i, action in enumerate(plan):
-            if action.get("action_id") == correlation_id or action.get("approved") is None:
-                plan[i] = {**action, "approved": approved}
-                updated = True
-                break
+        state_values = current_state.values
+        plan = list(state_values.get("action_plan", []))
+        idx = state_values.get("current_action_index", 0)
 
-        if not updated:
-            log.warning("pending_action_not_found", correlation_id=correlation_id)
+        if not plan:
+            log.warning("empty_action_plan", incident_id=incident_id)
             return {"response_action": "clear"}
 
-        # Update state and resume graph
+        # current_action_index points at the DESTRUCTIVE action awaiting approval
+        target_idx = idx if idx < len(plan) else len(plan) - 1
+        plan[target_idx] = {**plan[target_idx], "approved": approved}
+
+        # Update checkpoint then resume
         await graph.aupdate_state(config, {"action_plan": plan})
-        # Resume by invoking with None (picks up from checkpoint)
         import asyncio
         asyncio.create_task(graph.ainvoke(None, config))
 
-        log.info("graph_resumed", incident_id=incident_id, approved=approved)
+        log.info("graph_resumed", incident_id=incident_id, approved=approved, action_idx=target_idx)
     except Exception as e:
         log.error("graph_resume_failed", error=str(e), incident_id=incident_id)
 

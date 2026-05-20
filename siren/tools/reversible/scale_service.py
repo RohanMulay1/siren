@@ -20,7 +20,8 @@ class ScaleService:
     }
 
     @staticmethod
-    async def execute(service: str, replicas: int, compose_file: str = "docker-compose.yml") -> str:
+    async def execute(service: str = "", replicas: int = 1, compose_file: str = "docker-compose.yml", service_name: str = "", **kwargs) -> str:
+        service = service or service_name  # accept both LLM naming conventions
         import asyncio
         try:
             proc = await asyncio.create_subprocess_exec(

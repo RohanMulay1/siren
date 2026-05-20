@@ -4,7 +4,7 @@ from fastapi import FastAPI
 
 from .config import get_settings
 from .memory import get_qdrant_client, ensure_collection
-from .db import create_tables
+from .db.session import create_tables
 from .observability.langsmith import setup_langsmith
 from .observability.otel import setup_otel
 from .api.routers import alerts, approvals, incidents, health

@@ -38,7 +38,7 @@ async def run(state: IncidentState) -> dict:
         "Has the incident been resolved?"
     )
 
-    resp = chat_complete(
+    resp = await chat_complete(
         model=settings.model_verify,
         system=VERIFIER_SYSTEM,
         messages=[{"role": "user", "content": prompt}],

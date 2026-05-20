@@ -48,7 +48,7 @@ async def run(state: IncidentState) -> dict:
         "Generate the post-mortem."
     )
 
-    resp = chat_complete(
+    resp = await chat_complete(
         model=settings.model_postmortem,
         system=POSTMORTEM_SYSTEM,
         messages=[{"role": "user", "content": prompt}],

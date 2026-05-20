@@ -45,3 +45,6 @@ models/
 
 # Logs
 *.log
+
+# Binaries
+*.exe

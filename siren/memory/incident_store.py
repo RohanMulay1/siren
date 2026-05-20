@@ -22,9 +22,9 @@ def recall_similar_incidents(
 
     vector = embed(query_text)
 
-    results = client.search(
+    results = client.query_points(
         collection_name=settings.qdrant_collection,
-        query_vector=vector,
+        query=vector,
         query_filter=Filter(
             must=[
                 FieldCondition(key="resolved", match=MatchValue(value=True)),
@@ -36,7 +36,7 @@ def recall_similar_incidents(
         ),
         limit=top_k,
         with_payload=True,
-    )
+    ).points
 
     return [
         SimilarIncident(

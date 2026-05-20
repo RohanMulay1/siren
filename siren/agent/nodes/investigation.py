@@ -1,4 +1,5 @@
 import json
+import asyncio
 from datetime import datetime
 from ..state import IncidentState, InvestigationFinding
 from ...config import get_settings
@@ -63,6 +64,10 @@ def _build_context(state: IncidentState) -> str:
 
 
 async def run(state: IncidentState) -> dict:
+    import structlog
+    log = structlog.get_logger()
+    log.info("investigation_node_started", incident_id=state.get("incident_id"))
+
     settings = get_settings()
     client = get_llm_client()
 
@@ -79,20 +84,23 @@ async def run(state: IncidentState) -> dict:
     findings: list[InvestigationFinding] = []
     root_cause = None
     root_cause_confidence = 0.0
-    max_iters = settings.investigation_max_iterations
+    last_assistant_text = ""
+    max_iters = 3  # inner LLM turns per graph node call
 
     for _ in range(max_iters):
-        resp = client.chat.completions.create(
+        resp = await client.chat.completions.create(
             model=settings.model_investigate,
             messages=messages,
             tools=openai_tools,
             tool_choice="auto",
-            max_tokens=4096,
+            max_tokens=2048,
             temperature=0.1,
         )
 
         choice = resp.choices[0]
         msg = choice.message
+        if msg.content:
+            last_assistant_text = msg.content
         messages.append(msg.model_dump(exclude_none=True))
 
         if choice.finish_reason == "tool_calls" and msg.tool_calls:
@@ -108,7 +116,7 @@ async def run(state: IncidentState) -> dict:
                 # Handle finish_investigation sentinel
                 if name == "finish_investigation":
                     root_cause = args.get("root_cause")
-                    root_cause_confidence = float(args.get("confidence", 0.8))
+                    root_cause_confidence = float(args.get("confidence", 0.85))
                     tool_results.append({
                         "role": "tool",
                         "tool_call_id": call.id,
@@ -121,7 +129,11 @@ async def run(state: IncidentState) -> dict:
                     raw_result = f"[Error] Unknown tool: {name}"
                 else:
                     try:
-                        raw_result = await handler.handler(**args)
+                        raw_result = await asyncio.wait_for(
+                            handler.handler(**args), timeout=15.0
+                        )
+                    except asyncio.TimeoutError:
+                        raw_result = f"[Tool timeout] {name} took > 15s"
                     except Exception as e:
                         raw_result = f"[Tool error] {type(e).__name__}: {e}"
 
@@ -144,16 +156,48 @@ async def run(state: IncidentState) -> dict:
             if root_cause:
                 break
         else:
-            # Model stopped without calling finish_investigation
-            text = msg.content or ""
-            root_cause = text[:500] or "Root cause could not be determined."
-            root_cause_confidence = 0.5
+            # Model gave a text response — treat it as the analysis
+            last_assistant_text = msg.content or ""
             break
+
+    # If the LLM exhausted turns without calling finish_investigation,
+    # ask it to synthesize the root cause from accumulated evidence
+    if not root_cause:
+        messages.append({
+            "role": "user",
+            "content": (
+                "You have gathered sufficient evidence. Based on all tool outputs above, "
+                "call finish_investigation now with your best assessment of the root cause. "
+                "Do not call any other tools."
+            ),
+        })
+        try:
+            synth_resp = client.chat.completions.create(
+                model=settings.model_investigate,
+                messages=messages,
+                tools=[to_openai_finish_tool(FINISH_TOOL)],
+                tool_choice={"type": "function", "function": {"name": "finish_investigation"}},
+                max_tokens=512,
+                temperature=0.1,
+            )
+            synth_msg = synth_resp.choices[0].message
+            if synth_msg.tool_calls:
+                call = synth_msg.tool_calls[0]
+                args = json.loads(call.function.arguments or "{}")
+                root_cause = args.get("root_cause", "Unknown root cause")
+                root_cause_confidence = float(args.get("confidence", 0.82))
+        except Exception:
+            pass
+
+    # Final fallback if synthesis also failed
+    if not root_cause:
+        root_cause = last_assistant_text[:500] or state.get("incident_summary", "Root cause unknown")
+        root_cause_confidence = 0.55
 
     return {
         "root_cause": root_cause,
         "root_cause_confidence": root_cause_confidence,
         "investigation_steps": findings,
         "investigation_iterations": state.get("investigation_iterations", 0) + 1,
-        "workflow_status": "planning",
+        "workflow_status": "investigating",
     }

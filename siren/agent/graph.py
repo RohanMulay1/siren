@@ -16,7 +16,7 @@ from .routing import (
 )
 
 
-def build_graph(use_redis: bool = False, redis_url: str | None = None):
+def build_graph(use_redis: bool = False, redis_url: str | None = None):  # noqa: ARG001
     """
     Build and compile the SIREN LangGraph state machine.
 
@@ -97,20 +97,9 @@ def build_graph(use_redis: bool = False, redis_url: str | None = None):
         },
     )
 
-    # Checkpointer — Redis enables human-in-the-loop pause/resume
-    if use_redis and redis_url:
-        try:
-            from langgraph.checkpoint.redis import RedisSaver
-            checkpointer = RedisSaver.from_conn_string(redis_url)
-        except ImportError:
-            checkpointer = MemorySaver()
-    else:
-        checkpointer = MemorySaver()
-
     return builder.compile(
-        checkpointer=checkpointer,
-        # Pause before execution for safety inspection (useful in dev)
-        # interrupt_before=["execute_action"],
+        checkpointer=MemorySaver(),
+        interrupt_after=["request_approval"],
     )
 
 
