@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'siren-api'
+    static_configs:
+      - targets: ['siren-api:8000']
+    metrics_path: /metrics
+
+  - job_name: 'redis-demo'
+    static_configs:
+      - targets: ['redis-demo:6379']

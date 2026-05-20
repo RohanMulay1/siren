@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check siren/ tests/
+
+      - name: Unit tests
+        run: pytest tests/unit/ -v --cov=siren --cov-report=term-missing
+        env:
+          ANTHROPIC_API_KEY: dummy
+          REDIS_URL: redis://localhost:6379
+          DATABASE_URL: postgresql+asyncpg://siren:siren@localhost:5432/siren
+          QDRANT_URL: http://localhost:6333
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: siren
+          POSTGRES_PASSWORD: siren
+          POSTGRES_DB: siren
+        ports: ["5432:5432"]
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports: ["6333:6333"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Integration tests
+        run: pytest tests/integration/ -v
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REDIS_URL: redis://localhost:6379
+          DATABASE_URL: postgresql+asyncpg://siren:siren@localhost:5432/siren
+          QDRANT_URL: http://localhost:6333

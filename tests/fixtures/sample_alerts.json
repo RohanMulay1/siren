@@ -1,0 +1,38 @@
+[
+  {
+    "name": "redis_oom_payments",
+    "payload": {
+      "source": "prometheus",
+      "alert_name": "HighErrorRate",
+      "severity": "critical",
+      "service": "payments-api",
+      "description": "payments-api error rate exceeded 40% for 5 minutes. Redis OOM command not allowed when used memory > maxmemory.",
+      "labels": {"env": "production", "region": "us-east-1", "service": "payments-api"},
+      "annotations": {"runbook": "https://wiki/redis-oom"}
+    }
+  },
+  {
+    "name": "db_connection_pool",
+    "payload": {
+      "source": "prometheus",
+      "alert_name": "DatabaseConnectionExhausted",
+      "severity": "critical",
+      "service": "user-service",
+      "description": "user-service database connection pool at 100% for 3 minutes. New requests timing out.",
+      "labels": {"env": "production", "region": "us-east-1", "service": "user-service"},
+      "annotations": {}
+    }
+  },
+  {
+    "name": "deploy_regression",
+    "payload": {
+      "source": "pagerduty",
+      "alert_name": "ServiceDown",
+      "severity": "critical",
+      "service": "order-service",
+      "description": "order-service returning 500 for all requests since deploy v2.4.1 15 minutes ago.",
+      "labels": {"env": "production", "region": "us-east-1", "service": "order-service"},
+      "annotations": {}
+    }
+  }
+]

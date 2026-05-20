@@ -1,0 +1,4 @@
+# Convenience symlink — actual config is in docker/docker-compose.yml
+# Run from project root: docker compose up
+include:
+  - docker/docker-compose.yml
