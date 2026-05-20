@@ -1,15 +1,18 @@
 """
-SIREN Dashboard — Live incident feed, MTTR trend (self-improvement proof), Qdrant memory stats.
+SIREN Dashboard — Live incident feed, MTTR trend, Qdrant memory stats.
 Run: streamlit run dashboard/app.py
 """
-import sys
-import os
+import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import streamlit as st
 import httpx
-import time
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime
+from collections import Counter
+import time
 
 st.set_page_config(
     page_title="SIREN — Incident Response Engine",
@@ -19,167 +22,265 @@ st.set_page_config(
 
 SIREN_URL = os.getenv("SIREN_API_URL", "http://localhost:8000")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "incidents")
+
+STATUS_COLOR = {
+    "triaging": "🟡",
+    "recalling": "🔵",
+    "investigating": "🔵",
+    "planning": "🟠",
+    "awaiting_approval": "🔴",
+    "executing": "🟠",
+    "verifying": "🟡",
+    "writing_postmortem": "🟢",
+    "complete": "✅",
+    "escalated": "⚠️",
+}
+SEV_COLOR = {"P1": "🔴", "P2": "🟠", "P3": "🟡", "P4": "⚪"}
+
+NODE_ORDER = [
+    "ingesting", "triaging", "recalling", "investigating",
+    "planning", "awaiting_approval", "executing", "verifying",
+    "writing_postmortem", "complete",
+]
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def api(path, timeout=4):
+    try:
+        with httpx.Client(timeout=timeout) as c:
+            r = c.get(f"{SIREN_URL}{path}")
+            if r.status_code == 200:
+                return r.json()
+    except Exception:
+        pass
+    return None
+
+
+def qdrant_scroll():
+    try:
+        from qdrant_client import QdrantClient
+        q = QdrantClient(url=QDRANT_URL)
+        return q.scroll(collection_name=QDRANT_COLLECTION, limit=500, with_payload=True)[0]
+    except Exception:
+        return []
+
+
+# ── header / health ──────────────────────────────────────────────────────────
 
 st.title("🚨 SIREN — Self-Improving Incident Response Engine")
-st.caption("Autonomous AI agent for production incident response")
+st.caption("Autonomous AI agent · multi-step tool-use · Slack human-in-the-loop · Qdrant memory")
 
-# --- Health bar ---
-try:
-    with httpx.Client(timeout=3) as client:
-        health = client.get(f"{SIREN_URL}/health").json()
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Status", "🟢 Online")
-    col2.metric("Memory (Qdrant)", f"{health.get('qdrant_incidents', 0)} incidents")
-    col3.metric("Environment", health.get("environment", "unknown").upper())
-except Exception:
-    st.error("SIREN API unreachable. Start the server with: uvicorn siren.main:app --reload")
+health = api("/health")
+if not health:
+    st.error("SIREN API unreachable. Run: `uvicorn siren.main:app --host 0.0.0.0 --port 8000`")
     st.stop()
 
-st.divider()
-
-# --- MTTR self-improvement chart ---
-st.subheader("📉 MTTR Trend — Self-Improvement Signal")
-st.caption("Average resolution time decreases as Qdrant memory grows. This is the proof of learning.")
-
-try:
-    from qdrant_client import QdrantClient
-    from qdrant_client.models import Filter, FieldCondition, MatchValue
-    import plotly.express as px
-    import pandas as pd
-
-    qdrant = QdrantClient(url=QDRANT_URL)
-    collection = os.getenv("QDRANT_COLLECTION", "incidents")
-
-    results = qdrant.scroll(
-        collection_name=collection,
-        scroll_filter=Filter(must=[FieldCondition(key="resolved", match=MatchValue(value=True))]),
-        limit=500,
-        with_payload=True,
-    )[0]
-
-    if results:
-        rows = []
-        for r in results:
-            p = r.payload
-            if p.get("time_to_resolve_minutes") and p.get("created_at"):
-                rows.append({
-                    "date": pd.to_datetime(p["created_at"]),
-                    "mttr": float(p["time_to_resolve_minutes"]),
-                    "service": p.get("affected_service", "unknown"),
-                    "severity": p.get("severity", "P3"),
-                    "root_cause_category": p.get("root_cause_category", "other"),
-                })
-
-        if rows:
-            df = pd.DataFrame(rows).sort_values("date")
-            df["incident_number"] = range(1, len(df) + 1)
-
-            fig = px.line(
-                df, x="incident_number", y="mttr",
-                color="service",
-                markers=True,
-                title="MTTR by Incident Number — each point represents one resolved incident",
-                labels={"incident_number": "Incident # (chronological)", "mttr": "MTTR (minutes)"},
-            )
-            fig.update_layout(height=350)
-            st.plotly_chart(fig, use_container_width=True)
-
-            avg_first_half = df["mttr"].head(len(df) // 2).mean()
-            avg_second_half = df["mttr"].tail(len(df) // 2).mean()
-            if avg_first_half > 0:
-                improvement = (1 - avg_second_half / avg_first_half) * 100
-                if improvement > 0:
-                    st.success(f"✅ MTTR improved by **{improvement:.0f}%** as Qdrant memory grew from {len(df)//2} → {len(df)} incidents")
-        else:
-            st.info("No resolved incidents yet. Run seed_qdrant.py and trigger_demo.py to populate.")
-    else:
-        st.info("Qdrant collection is empty. Run: python scripts/seed_qdrant.py")
-except Exception as e:
-    st.warning(f"Could not load MTTR data: {e}")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("API", "🟢 Online")
+c2.metric("Qdrant Memory", f"{health.get('qdrant_incidents', 0)} incidents")
+c3.metric("Environment", health.get("environment", "dev").upper())
+c4.metric("Version", health.get("version", "1.0.0"))
 
 st.divider()
 
-# --- Qdrant memory breakdown ---
-st.subheader("🧠 Incident Memory (Qdrant)")
-col1, col2 = st.columns(2)
+# ── fire demo button ──────────────────────────────────────────────────────────
 
-try:
-    from qdrant_client import QdrantClient
-    import plotly.express as px
-    import pandas as pd
-    from collections import Counter
-
-    qdrant = QdrantClient(url=QDRANT_URL)
-    collection = os.getenv("QDRANT_COLLECTION", "incidents")
-    results = qdrant.scroll(collection_name=collection, limit=500, with_payload=True)[0]
-
-    if results:
-        categories = Counter(r.payload.get("root_cause_category", "other") for r in results)
-        services = Counter(r.payload.get("affected_service", "unknown") for r in results)
-
-        with col1:
-            fig1 = px.pie(
-                values=list(categories.values()),
-                names=list(categories.keys()),
-                title="By Root Cause Category",
-            )
-            st.plotly_chart(fig1, use_container_width=True)
-
-        with col2:
-            fig2 = px.bar(
-                x=list(services.keys()),
-                y=list(services.values()),
-                title="By Affected Service",
-                labels={"x": "Service", "y": "Incident Count"},
-            )
-            st.plotly_chart(fig2, use_container_width=True)
-except Exception as e:
-    st.warning(f"Could not load memory stats: {e}")
-
-st.divider()
-
-# --- Fire demo alert button ---
 st.subheader("🔥 Demo Controls")
-col1, col2 = st.columns([1, 3])
-with col1:
-    if st.button("Fire Demo Incident", type="primary", use_container_width=True):
+col_btn, col_id = st.columns([1, 3])
+with col_btn:
+    if st.button("Fire Redis OOM Incident", type="primary", use_container_width=True):
         try:
-            with httpx.Client() as client:
-                resp = client.post(f"{SIREN_URL}/webhook/alert", json={
-                    "source": "prometheus",
-                    "alert_name": "HighErrorRate",
-                    "severity": "critical",
+            with httpx.Client(timeout=5) as c:
+                r = c.post(f"{SIREN_URL}/webhook/alert", json={
+                    "source": "custom",
+                    "alert_name": "RedisOOM",
+                    "severity": "P1",
                     "service": "payments-api",
-                    "description": "payments-api error rate exceeded 40%. Redis OOM errors observed.",
-                    "labels": {"env": "production", "region": "us-east-1", "service": "payments-api"},
+                    "description": "Redis out of memory — OOM command not allowed. Error rate 45%. Payments service degraded.",
+                    "labels": {"env": "production"},
                 })
-                data = resp.json()
-                st.success(f"Incident created: **{data['incident_id']}**")
-                st.session_state["last_incident"] = data["incident_id"]
+                data = r.json()
+                st.session_state["active_incident"] = data["incident_id"]
+                st.success(f"Created: **{data['incident_id']}**")
         except Exception as e:
-            st.error(f"Failed to fire alert: {e}")
+            st.error(str(e))
 
-with col2:
-    if "last_incident" in st.session_state:
-        incident_id = st.session_state["last_incident"]
-        try:
-            with httpx.Client() as client:
-                resp = client.get(f"{SIREN_URL}/api/incidents/{incident_id}", timeout=3)
-                if resp.status_code == 200:
-                    state = resp.json()
-                    status = state.get("workflow_status", "unknown")
-                    root_cause = state.get("root_cause", "Investigating...")
-                    similar_count = len(state.get("similar_incidents", []))
+with col_id:
+    manual_id = st.text_input("Or poll an existing incident ID:", key="manual_id")
+    if manual_id:
+        st.session_state["active_incident"] = manual_id
 
-                    st.metric("Workflow Status", status.upper().replace("_", " "))
-                    st.metric("Similar Incidents Found", similar_count)
-                    if root_cause and root_cause != "Investigating...":
-                        st.info(f"**Root Cause:** {root_cause}")
-        except Exception:
-            pass
+st.divider()
 
-st.caption(f"Last refreshed: {datetime.utcnow().strftime('%H:%M:%S UTC')} | Auto-refreshes every 10s")
+# ── live incident tracker ─────────────────────────────────────────────────────
 
-# Auto-refresh
-time.sleep(0.1)
-st.rerun() if st.checkbox("Auto-refresh", value=True) else None
+if "active_incident" in st.session_state:
+    inc_id = st.session_state["active_incident"]
+    st.subheader(f"🔎 Live: `{inc_id}`")
+
+    state = api(f"/api/incidents/{inc_id}")
+    if state:
+        status = state.get("workflow_status", "unknown")
+        icon = STATUS_COLOR.get(status, "⚪")
+        sev = state.get("severity", "?")
+        sev_icon = SEV_COLOR.get(sev, "⚪")
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Status", f"{icon} {status.replace('_', ' ').upper()}")
+        m2.metric("Severity", f"{sev_icon} {sev}")
+        m3.metric("Investigation Iterations", state.get("investigation_iterations", 0))
+        m4.metric("Actions Planned", len(state.get("action_plan", [])))
+
+        # Node progress bar
+        current_idx = NODE_ORDER.index(status) if status in NODE_ORDER else 0
+        progress = (current_idx + 1) / len(NODE_ORDER)
+        st.progress(progress, text=f"Node: {status.replace('_', ' ')}")
+
+        # Root cause
+        rc = state.get("root_cause")
+        if rc:
+            conf = state.get("root_cause_confidence", 0)
+            st.info(f"**Root Cause** (confidence {conf:.0%}): {rc}")
+
+        # Action plan
+        plan = state.get("action_plan", [])
+        if plan:
+            st.markdown("**Action Plan:**")
+            idx = state.get("current_action_index", 0)
+            tier_icon = {"READ": "👁️", "REVERSIBLE": "🔄", "DESTRUCTIVE": "💥"}
+            for i, a in enumerate(plan):
+                approved = a.get("approved")
+                if approved is True:
+                    badge = "✅ approved"
+                elif approved is False:
+                    badge = "❌ rejected"
+                elif i < idx:
+                    badge = "✅ executed"
+                elif i == idx and status == "awaiting_approval":
+                    badge = "⏳ **awaiting your APPROVE in Slack**"
+                else:
+                    badge = "pending"
+                icon_t = tier_icon.get(a["classification"], "❓")
+                st.markdown(f"  {icon_t} `{a['tool_name']}` — {a['classification']} — {badge}")
+
+        if status == "awaiting_approval":
+            st.warning("⏳ Check Slack — click **APPROVE** or **REJECT** to continue")
+    else:
+        st.info("Incident initializing... (first 20-30s are investigation)")
+
+st.divider()
+
+# ── recent incidents feed ─────────────────────────────────────────────────────
+
+st.subheader("📋 Recent Incidents")
+incidents = api("/api/incidents") or []
+if incidents:
+    rows = []
+    for inc in incidents:
+        sev = inc.get("severity", "?")
+        status = inc.get("workflow_status", "?")
+        rows.append({
+            "Severity": f"{SEV_COLOR.get(sev,'⚪')} {sev}",
+            "Incident ID": inc.get("incident_id", ""),
+            "Service": inc.get("affected_service", ""),
+            "Status": f"{STATUS_COLOR.get(status,'⚪')} {status}",
+            "Root Cause": (inc.get("root_cause") or "")[:80],
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+else:
+    st.info("No incidents yet — click 'Fire Redis OOM Incident' above.")
+
+st.divider()
+
+# ── MTTR self-improvement chart ───────────────────────────────────────────────
+
+st.subheader("📉 MTTR Trend — Self-Improvement Signal")
+st.caption("As Qdrant memory grows, recalled playbooks shorten investigation time. Watch MTTR fall.")
+
+records = qdrant_scroll()
+if records:
+    rows = []
+    for r in records:
+        p = r.payload
+        if p.get("time_to_resolve_minutes") and p.get("created_at"):
+            rows.append({
+                "date": pd.to_datetime(p["created_at"]),
+                "mttr": float(p["time_to_resolve_minutes"]),
+                "service": p.get("affected_service", "unknown"),
+                "severity": p.get("severity", "P3"),
+                "category": p.get("root_cause_category", "other"),
+                "description": (p.get("description") or "")[:60],
+            })
+
+    if rows:
+        df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+        df["Incident #"] = range(1, len(df) + 1)
+
+        fig = px.scatter(
+            df, x="Incident #", y="mttr",
+            color="category", size_max=10,
+            trendline="ols",
+            hover_data=["service", "severity", "description"],
+            title="MTTR per Incident (with LOWESS trend) — downward slope = self-improvement",
+            labels={"mttr": "MTTR (minutes)", "Incident #": "Incident # (chronological)"},
+        )
+        fig.update_traces(marker=dict(size=10), selector=dict(mode="markers"))
+        fig.update_layout(height=380)
+        st.plotly_chart(fig, use_container_width=True)
+
+        n = len(df)
+        if n >= 4:
+            first_avg = df["mttr"].head(n // 2).mean()
+            last_avg = df["mttr"].tail(n // 2).mean()
+            delta = first_avg - last_avg
+            pct = (delta / first_avg * 100) if first_avg > 0 else 0
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Avg MTTR (first half)", f"{first_avg:.1f} min")
+            c2.metric("Avg MTTR (second half)", f"{last_avg:.1f} min", delta=f"-{delta:.1f} min", delta_color="normal")
+            c3.metric("Improvement", f"{pct:.0f}%")
+    else:
+        st.info("No resolved incidents with MTTR data yet.")
+else:
+    st.info("Qdrant is empty. Run: `python scripts/seed_qdrant.py`")
+
+st.divider()
+
+# ── Qdrant memory breakdown ───────────────────────────────────────────────────
+
+st.subheader("🧠 Incident Memory (Qdrant)")
+if records:
+    categories = Counter(r.payload.get("root_cause_category", "other") for r in records)
+    services = Counter(r.payload.get("affected_service", "unknown") for r in records)
+    severities = Counter(r.payload.get("severity", "P3") for r in records)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        fig = px.pie(values=list(categories.values()), names=list(categories.keys()),
+                     title=f"By Root Cause Category ({len(records)} total)")
+        fig.update_layout(height=280)
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        fig = px.bar(x=list(services.keys()), y=list(services.values()),
+                     title="By Service", labels={"x": "Service", "y": "Count"})
+        fig.update_layout(height=280)
+        st.plotly_chart(fig, use_container_width=True)
+    with c3:
+        sev_order = ["P1", "P2", "P3", "P4"]
+        sev_counts = [severities.get(s, 0) for s in sev_order]
+        colors = ["#e74c3c", "#e67e22", "#f1c40f", "#95a5a6"]
+        fig = go.Figure(go.Bar(x=sev_order, y=sev_counts, marker_color=colors))
+        fig.update_layout(title="By Severity", height=280,
+                          xaxis_title="Severity", yaxis_title="Count")
+        st.plotly_chart(fig, use_container_width=True)
+
+st.divider()
+st.caption(f"Refreshed at {datetime.utcnow().strftime('%H:%M:%S UTC')} · "
+           f"[API Docs]({SIREN_URL}/docs) · "
+           f"[GitHub](https://github.com/RohanMulay1/siren)")
+
+# Auto-refresh toggle
+if st.checkbox("Auto-refresh every 8s", value=True):
+    time.sleep(8)
+    st.rerun()

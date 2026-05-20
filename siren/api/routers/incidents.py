@@ -44,6 +44,25 @@ async def get_incident(incident_id: str):
     return state.values
 
 
+@router.post("/incidents/{incident_id}/approve")
+async def approve_incident_action(incident_id: str, approved: bool = True):
+    """Directly approve/reject the pending DESTRUCTIVE action — for demo/testing."""
+    import asyncio
+    graph = get_graph()
+    config = {"configurable": {"thread_id": incident_id}}
+    current = graph.get_state(config)
+    if not current or not current.values:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    plan = list(current.values.get("action_plan", []))
+    idx = current.values.get("current_action_index", 0)
+    if not plan or idx >= len(plan):
+        raise HTTPException(status_code=400, detail="No pending action")
+    plan[idx] = {**plan[idx], "approved": approved}
+    await graph.aupdate_state(config, {"action_plan": plan})
+    asyncio.create_task(graph.ainvoke(None, config))
+    return {"incident_id": incident_id, "action": plan[idx]["tool_name"], "approved": approved}
+
+
 @router.get("/incidents/{incident_id}/history")
 async def get_incident_history(incident_id: str):
     graph = get_graph()

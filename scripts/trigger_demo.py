@@ -1,118 +1,151 @@
 """
-Fire the Redis OOM demo incident for competition demo.
+Fire the SIREN Redis OOM demo end-to-end.
 
 Usage:
-  python scripts/trigger_demo.py            # fire alert, run SIREN
-  python scripts/trigger_demo.py --fill     # fill Redis until OOM first
-  python scripts/trigger_demo.py --reset    # reset MTTR tracking
+  python scripts/trigger_demo.py           # fire + watch (default)
+  python scripts/trigger_demo.py --quiet   # fire only, no polling
+  python scripts/trigger_demo.py --repeat N  # fire N incidents to grow MTTR trend
 
-This fires a synthetic Prometheus alert simulating a payments-api Redis OOM.
-SIREN will investigate, find 3 similar past incidents, plan a fix,
-request Slack approval for FLUSHDB, and auto-verify resolution.
+What happens:
+  1. Posts a synthetic Redis OOM alert to SIREN
+  2. SIREN triages P1, recalls similar incidents from Qdrant
+  3. Investigates root cause via tool-use loop (logs + metrics + docker inspect)
+  4. Plans: restart_docker_container (auto) + flush_redis_cache (Slack approval)
+  5. Sends Slack APPROVE/REJECT message — click APPROVE
+  6. Executes flush, verifies recovery, writes post-mortem to Qdrant
+  7. Prints final MTTR and Qdrant vector ID
 """
-import sys
-import os
+import sys, os, asyncio, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import asyncio
 import httpx
-import redis
 
 SIREN_URL = os.getenv("SIREN_URL", "http://localhost:8000")
 
 DEMO_ALERT = {
-    "source": "prometheus",
-    "alert_name": "HighErrorRate",
-    "severity": "critical",
+    "source": "custom",
+    "alert_name": "RedisOOM",
+    "severity": "P1",
     "service": "payments-api",
     "description": (
-        "payments-api error rate exceeded 40% for 5 minutes. "
-        "Redis connection errors observed: OOM command not allowed when used memory > maxmemory."
+        "Redis out of memory — OOM command not allowed when used memory > maxmemory. "
+        "payments-api error rate 45%, p99 latency 8.4s. Restart count: 3."
     ),
-    "labels": {
-        "env": "production",
-        "region": "us-east-1",
-        "team": "payments",
-        "service": "payments-api",
-    },
-    "annotations": {
-        "runbook": "https://wiki.internal/runbooks/redis-oom",
-        "dashboard": "https://grafana.internal/d/payments",
-    },
+    "labels": {"env": "production", "region": "us-east-1", "team": "payments"},
+}
+
+STATUS_ICON = {
+    "triaging": "🔍", "recalling": "🧠", "investigating": "🔬",
+    "planning": "📋", "awaiting_approval": "⏳", "executing": "⚙️",
+    "verifying": "✅", "writing_postmortem": "📝",
+    "complete": "✅", "escalated": "⚠️",
 }
 
 
-def fill_redis_for_demo(redis_url: str = "redis://localhost:6380"):
-    """Fill the demo Redis (memory-constrained to 64MB) until near-OOM."""
-    print("Filling demo Redis to trigger OOM condition...")
-    r = redis.from_url(redis_url)
-    r.flushdb()
-
-    # Write 1KB values until OOM
-    value = "x" * 1024
-    i = 0
-    while True:
-        try:
-            r.set(f"session:{i}", value, ex=86400)
-            i += 1
-            if i % 1000 == 0:
-                info = r.info("memory")
-                used_mb = info["used_memory"] / 1024 / 1024
-                print(f"  {i} keys written, {used_mb:.1f} MB used...")
-        except Exception as e:
-            print(f"  Redis OOM reached at {i} keys: {e}")
-            break
-
-    print(f"Demo Redis filled with {i} keys. Ready to fire alert.")
-
-
-async def fire_alert():
-    print(f"Firing demo incident to SIREN at {SIREN_URL}...")
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(f"{SIREN_URL}/webhook/alert", json=DEMO_ALERT)
-        resp.raise_for_status()
-        data = resp.json()
+async def fire_and_watch(label: str = "") -> dict:
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(f"{SIREN_URL}/webhook/alert", json=DEMO_ALERT)
+        r.raise_for_status()
+        data = r.json()
 
     incident_id = data["incident_id"]
-    print(f"\nIncident created: {incident_id}")
-    print(f"Status: {data['status']}")
-    print(f"\nMonitor progress:")
-    print(f"  API:       {SIREN_URL}/api/incidents/{incident_id}")
-    print(f"  Dashboard: http://localhost:8501")
-    print(f"\nSIREN is now investigating. Watch Slack for the APPROVE/REJECT message.")
-    return incident_id
+    tag = f" [{label}]" if label else ""
+    print(f"\n{'='*60}")
+    print(f"Incident created{tag}: {incident_id}")
+    print(f"Dashboard:  http://localhost:8501")
+    print(f"API state:  {SIREN_URL}/api/incidents/{incident_id}")
+    print(f"{'='*60}")
 
+    last_status = None
+    start = time.time()
 
-async def watch_incident(incident_id: str):
-    """Poll incident status until complete."""
-    print(f"\nWatching incident {incident_id}...")
-    async with httpx.AsyncClient() as client:
-        for _ in range(60):  # poll for up to 5 minutes
+    async with httpx.AsyncClient(timeout=5) as client:
+        for _ in range(120):  # up to 10 minutes
             await asyncio.sleep(5)
             try:
-                resp = await client.get(f"{SIREN_URL}/api/incidents/{incident_id}")
-                if resp.status_code == 200:
-                    state = resp.json()
-                    status = state.get("workflow_status", "unknown")
-                    print(f"  Status: {status}")
-                    if status in ("complete", "escalated"):
-                        print(f"\nIncident resolved!")
-                        print(f"  Root cause: {state.get('root_cause', 'N/A')}")
-                        print(f"  Qdrant vector: {state.get('qdrant_vector_id', 'N/A')}")
-                        return
+                r = await client.get(f"{SIREN_URL}/api/incidents/{incident_id}")
+                if r.status_code != 200:
+                    continue
+                state = r.json()
             except Exception:
-                pass
+                continue
+
+            status = state.get("workflow_status", "unknown")
+            if status != last_status:
+                icon = STATUS_ICON.get(status, "⚪")
+                elapsed = int(time.time() - start)
+                print(f"  [{elapsed:3d}s] {icon}  {status.replace('_', ' ').upper()}", end="")
+                if status == "investigating":
+                    print(f"  (iter {state.get('investigation_iterations', 0)}/5)", end="")
+                if status == "awaiting_approval":
+                    plan = state.get("action_plan", [])
+                    idx = state.get("current_action_index", 0)
+                    if plan and idx < len(plan):
+                        pending = plan[idx]["tool_name"]
+                        print(f"\n\n  >>> CHECK SLACK — click APPROVE for [{pending}] <<<\n", end="")
+                print()
+                last_status = status
+
+            if status in ("complete", "escalated"):
+                elapsed = int(time.time() - start)
+                print(f"\n{'='*60}")
+                print(f"DONE in {elapsed}s ({elapsed/60:.1f} min)")
+                print(f"Root cause:   {state.get('root_cause', 'N/A')}")
+                print(f"Confidence:   {state.get('root_cause_confidence', 0):.0%}")
+                print(f"Post-mortem:  {state.get('postmortem_id', 'N/A')}")
+                print(f"Qdrant ID:    {state.get('qdrant_vector_id', 'N/A')}")
+                print(f"{'='*60}")
+                return {"incident_id": incident_id, "mttr_seconds": elapsed, "status": status}
+
+    print("Timed out after 10 minutes.")
+    return {"incident_id": incident_id, "status": "timeout"}
+
+
+async def main():
+    args = sys.argv[1:]
+    quiet = "--quiet" in args
+    repeat = 1
+    for i, a in enumerate(args):
+        if a == "--repeat" and i + 1 < len(args):
+            repeat = int(args[i + 1])
+
+    # Health check
+    try:
+        async with httpx.AsyncClient(timeout=4) as client:
+            h = (await client.get(f"{SIREN_URL}/health")).json()
+        print(f"SIREN API: online | Qdrant: {h.get('qdrant_incidents', 0)} incidents in memory")
+    except Exception:
+        print(f"ERROR: SIREN API not reachable at {SIREN_URL}")
+        print("Start with: uvicorn siren.main:app --host 0.0.0.0 --port 8000")
+        sys.exit(1)
+
+    results = []
+    for i in range(repeat):
+        label = f"run {i+1}/{repeat}" if repeat > 1 else ""
+        if quiet:
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.post(f"{SIREN_URL}/webhook/alert", json=DEMO_ALERT)
+                data = r.json()
+                print(f"Fired: {data['incident_id']}")
+        else:
+            result = await fire_and_watch(label)
+            results.append(result)
+            if repeat > 1 and i < repeat - 1:
+                print("\nWaiting 10s before next run...")
+                await asyncio.sleep(10)
+
+    if len(results) > 1:
+        print(f"\n{'='*60}")
+        print("MTTR SUMMARY (self-improvement proof):")
+        for i, r in enumerate(results):
+            mins = r.get("mttr_seconds", 0) / 60
+            print(f"  Run {i+1}: {mins:.1f} min  ({r['status']})")
+        mttr_vals = [r["mttr_seconds"] for r in results if r.get("mttr_seconds")]
+        if len(mttr_vals) >= 2:
+            improvement = (mttr_vals[0] - mttr_vals[-1]) / mttr_vals[0] * 100
+            print(f"\n  Improvement run 1 -> {len(results)}: {improvement:.0f}%")
+        print(f"{'='*60}")
 
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
-
-    if "--fill" in args:
-        fill_redis_for_demo()
-
-    async def main():
-        incident_id = await fire_alert()
-        if "--watch" in args:
-            await watch_incident(incident_id)
-
     asyncio.run(main())
