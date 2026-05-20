@@ -6,6 +6,7 @@ from ...config import get_settings
 from ...memory import get_qdrant_client, ensure_collection, upsert_incident
 from ...memory.schemas import IncidentVectorPayload
 from ...llm import chat_complete
+from ...integrations.slack.client import send_resolution
 
 POSTMORTEM_SYSTEM = """You are SIREN's post-mortem writer. Generate a structured post-mortem.
 
@@ -96,6 +97,24 @@ async def run(state: IncidentState) -> dict:
     vector_id = upsert_incident(qdrant, payload)
     postmortem_id = str(uuid.uuid4())[:8]
     status = "complete" if state.get("remediation_verified") else "escalated"
+
+    # Send resolution notification to Slack
+    try:
+        created = state.get("created_at")
+        mttr = 0.0
+        if created:
+            elapsed = (now - datetime.fromisoformat(created.replace("Z", "+00:00"))).total_seconds()
+            mttr = round(elapsed / 60, 1)
+        await send_resolution(
+            incident_id=state["incident_id"],
+            severity=state["severity"],
+            service=state["affected_service"],
+            root_cause=state["root_cause"] or "Unknown",
+            mttr_minutes=mttr,
+            postmortem_id=postmortem_id,
+        )
+    except Exception:
+        pass
 
     return {
         "postmortem_id": postmortem_id,

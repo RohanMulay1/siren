@@ -37,6 +37,8 @@ async def run(state: IncidentState) -> dict:
             action=action,
             similar_context=similar_context,
             investigation_summary=investigation_summary,
+            action_index=idx,
+            total_actions=len(plan),
         )
         log.info("slack_approval_sent", incident_id=state["incident_id"], action_id=action["action_id"])
     except Exception as e:

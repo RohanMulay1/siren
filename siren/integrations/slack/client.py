@@ -3,7 +3,7 @@ from slack_sdk.errors import SlackApiError
 from functools import lru_cache
 from ...config import get_settings
 from ...agent.state import ActionPlan
-from .blocks import build_approval_message, build_incident_notification
+from .blocks import build_approval_message, build_incident_notification, build_resolution_notification
 import structlog
 
 log = structlog.get_logger()
@@ -24,6 +24,8 @@ async def send_approval_request(
     action: ActionPlan,
     similar_context: str = "",
     investigation_summary: str = "",
+    action_index: int = 0,
+    total_actions: int = 1,
 ) -> str:
     settings = get_settings()
     client = _get_slack_client()
@@ -37,6 +39,8 @@ async def send_approval_request(
         similar_context=similar_context,
         investigation_summary=investigation_summary,
         correlation_id=correlation_id,
+        action_index=action_index,
+        total_actions=total_actions,
     )
 
     resp = await client.chat_postMessage(
@@ -55,6 +59,23 @@ async def send_notification(incident_id: str, severity: str, service: str, summa
         await client.chat_postMessage(channel=settings.slack_channel_id, **message)
     except SlackApiError as e:
         log.warning("slack_notification_failed", error=str(e))
+
+
+async def send_resolution(
+    incident_id: str,
+    severity: str,
+    service: str,
+    root_cause: str,
+    mttr_minutes: float,
+    postmortem_id: str | None = None,
+) -> None:
+    settings = get_settings()
+    client = _get_slack_client()
+    message = build_resolution_notification(incident_id, severity, service, root_cause, mttr_minutes, postmortem_id)
+    try:
+        await client.chat_postMessage(channel=settings.slack_channel_id, **message)
+    except SlackApiError as e:
+        log.warning("slack_resolution_failed", error=str(e))
 
 
 async def update_message(channel: str, ts: str, text: str) -> None:
