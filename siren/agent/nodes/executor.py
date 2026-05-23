@@ -97,7 +97,7 @@ async def run(state: IncidentState) -> dict:
             approved_by=None,
             result_status=result_entry.get("status", "unknown"),
             result_summary=result_entry.get("result", ""),
-            database_url=settings.database_url,
+            database_url=settings.async_database_url,
         )
     except Exception as e:
         log.warning("audit_write_failed", error=str(e))

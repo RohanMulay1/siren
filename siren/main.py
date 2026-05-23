@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
 
     # Postgres tables (create_all is idempotent)
     try:
-        await create_tables(settings.database_url)
+        await create_tables(settings.async_database_url)
         log.info("postgres_ready")
     except Exception as e:
         log.warning("postgres_unavailable", error=str(e))

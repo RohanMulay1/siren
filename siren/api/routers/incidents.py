@@ -12,7 +12,7 @@ router = APIRouter()
 async def list_incidents(limit: int = 20):
     settings = get_settings()
     try:
-        factory = get_session_factory(settings.database_url)
+        factory = get_session_factory(settings.async_database_url)
         async with factory() as session:
             result = await session.execute(
                 select(Incident).order_by(desc(Incident.created_at)).limit(limit)
