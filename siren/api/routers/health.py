@@ -1,6 +1,6 @@
+import asyncio
 from fastapi import APIRouter
 from pydantic import BaseModel
-from ...memory import get_qdrant_client, count_incidents
 from ...config import get_settings
 
 router = APIRouter()
@@ -17,8 +17,12 @@ class HealthResponse(BaseModel):
 async def health():
     settings = get_settings()
     try:
+        from ...memory import get_qdrant_client, count_incidents
         qdrant = get_qdrant_client()
-        incident_count = count_incidents(qdrant)
+        incident_count = await asyncio.wait_for(
+            asyncio.to_thread(count_incidents, qdrant),
+            timeout=5.0,
+        )
     except Exception:
         incident_count = -1
 
