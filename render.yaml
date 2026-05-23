@@ -1,0 +1,51 @@
+services:
+  - type: web
+    name: siren-api
+    runtime: python
+    buildCommand: pip install -e .
+    startCommand: uvicorn siren.main:app --host 0.0.0.0 --port $PORT
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LLM_PROVIDER
+        fromGroup: siren-secrets
+      - key: OPENROUTER_API_KEY
+        fromGroup: siren-secrets
+      - key: SLACK_BOT_TOKEN
+        fromGroup: siren-secrets
+      - key: SLACK_SIGNING_SECRET
+        fromGroup: siren-secrets
+      - key: SLACK_CHANNEL_ID
+        fromGroup: siren-secrets
+      - key: QDRANT_URL
+        fromGroup: siren-secrets
+      - key: LANGSMITH_API_KEY
+        fromGroup: siren-secrets
+      - key: LANGSMITH_PROJECT
+        value: siren
+      - key: GITHUB_TOKEN
+        fromGroup: siren-secrets
+      - key: DATABASE_URL
+        fromDatabase:
+          name: siren-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: siren-redis
+          property: connectionString
+
+  - type: redis
+    name: siren-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+
+databases:
+  - name: siren-db
+    plan: free
+    databaseName: siren
+    user: siren
