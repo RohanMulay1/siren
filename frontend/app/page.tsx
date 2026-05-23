@@ -34,13 +34,26 @@ const T = {
 
 function Terminal() {
   const [visible, setVisible] = useState<number[]>([]);
-  const ref = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   useEffect(() => {
-    ref.current = TERMINAL_LINES.map((line, i) =>
-      setTimeout(() => setVisible(v => [...v, i]), line.delay)
-    );
-    return () => ref.current.forEach(clearTimeout);
+    function play() {
+      setVisible([]);
+      timers.current.forEach(clearTimeout);
+      timers.current = [];
+
+      TERMINAL_LINES.forEach((line, i) => {
+        timers.current.push(
+          setTimeout(() => setVisible(v => [...v, i]), line.delay)
+        );
+      });
+
+      const lastDelay = TERMINAL_LINES[TERMINAL_LINES.length - 1].delay;
+      timers.current.push(setTimeout(play, lastDelay + 12000));
+    }
+
+    play();
+    return () => timers.current.forEach(clearTimeout);
   }, []);
 
   return (
@@ -53,7 +66,7 @@ function Terminal() {
       lineHeight: "20px",
       display: "flex",
       flexDirection: "column",
-      justifyContent: "flex-end",
+      justifyContent: "flex-start",
       height: "100%",
       position: "relative",
       overflow: "hidden",
@@ -63,22 +76,28 @@ function Terminal() {
         background: `linear-gradient(to right, transparent, ${T.blue}88, transparent)`,
       }} />
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {TERMINAL_LINES.map((line, i) => (
-          <div key={i} style={{
-            display: "flex", gap: 12, alignItems: "flex-start",
-            opacity: visible.includes(i) ? 1 : 0,
-            transition: "opacity 0.4s ease",
-          }}>
-            <span style={{ color: T.blue, flexShrink: 0 }}>&gt;</span>
-            <span style={{ color: line.color }}>{line.text}</span>
+        {TERMINAL_LINES.map((line, i) =>
+          visible.includes(i) ? (
+            <div key={i} style={{
+              display: "flex", gap: 12, alignItems: "flex-start",
+              animation: "termFadeIn 0.35s ease",
+            }}>
+              <span style={{ color: T.blue, flexShrink: 0 }}>&gt;</span>
+              <span style={{ color: line.color }}>{line.text}</span>
+            </div>
+          ) : null
+        )}
+        {visible.length > 0 && (
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <span style={{ color: T.blue }}>&gt;</span>
+            <span style={{ color: T.blue, animation: "blink 1s step-end infinite" }}>_</span>
           </div>
-        ))}
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <span style={{ color: T.blue }}>&gt;</span>
-          <span style={{ color: T.blue, animation: "blink 1s step-end infinite" }}>_</span>
-        </div>
+        )}
       </div>
-      <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }`}</style>
+      <style>{`
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+        @keyframes termFadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:translateY(0)} }
+      `}</style>
     </div>
   );
 }
@@ -232,7 +251,8 @@ export default function LandingPage() {
 
               <p style={{ fontSize: 18, lineHeight: "28px", color: T.muted, maxWidth: 520, margin: 0 }}>
                 SIREN detects, investigates, and resolves production incidents autonomously
-                using advanced multi-step reasoning and tool-use — while you sleep.
+                using advanced multi-step reasoning and tool-use. Destructive actions pause
+                for a Slack approval — everything else runs hands-free.
               </p>
             </div>
 
@@ -255,10 +275,10 @@ export default function LandingPage() {
               </div>
               <div>
                 <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 24, fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 4 }}>
-                  0
+                  Slack
                 </div>
                 <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, letterSpacing: "0.05em", color: T.muted, textTransform: "uppercase" }}>
-                  Pages sent
+                  Human gate
                 </div>
               </div>
             </div>
