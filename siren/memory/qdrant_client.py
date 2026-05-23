@@ -13,7 +13,10 @@ from .embedder import EMBEDDING_DIM
 @lru_cache(maxsize=1)
 def get_qdrant_client() -> QdrantClient:
     settings = get_settings()
-    return QdrantClient(url=settings.qdrant_url)
+    return QdrantClient(
+        url=settings.qdrant_url,
+        api_key=settings.qdrant_api_key or None,
+    )
 
 
 def ensure_collection(client: QdrantClient, collection_name: str) -> None:
