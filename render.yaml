@@ -11,24 +11,34 @@ services:
         value: production
       - key: LOG_LEVEL
         value: INFO
-      - key: LLM_PROVIDER
-        fromGroup: siren-secrets
-      - key: OPENROUTER_API_KEY
-        fromGroup: siren-secrets
-      - key: SLACK_BOT_TOKEN
-        fromGroup: siren-secrets
-      - key: SLACK_SIGNING_SECRET
-        fromGroup: siren-secrets
-      - key: SLACK_CHANNEL_ID
-        fromGroup: siren-secrets
-      - key: QDRANT_URL
-        fromGroup: siren-secrets
-      - key: LANGSMITH_API_KEY
-        fromGroup: siren-secrets
       - key: LANGSMITH_PROJECT
         value: siren
+      - key: LLM_PROVIDER
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_SIGNING_SECRET
+        sync: false
+      - key: SLACK_CHANNEL_ID
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: LANGSMITH_API_KEY
+        sync: false
       - key: GITHUB_TOKEN
-        fromGroup: siren-secrets
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_DEFAULT_REGION
+        value: us-east-1
       - key: DATABASE_URL
         fromDatabase:
           name: siren-db
@@ -43,6 +53,7 @@ services:
     name: siren-redis
     plan: free
     maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
 
 databases:
   - name: siren-db
