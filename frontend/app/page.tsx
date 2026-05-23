@@ -1,642 +1,674 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
-import {
-  ScatterChart, Scatter, XAxis, YAxis, Tooltip,
-  PieChart, Pie, Cell, ResponsiveContainer, Line, ComposedChart,
-} from "recharts";
-import {
-  apiFetch, apiPost,
-  type HealthResponse, type Incident, type IncidentState, type MemoryStats,
-} from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 
-// ── colours ──────────────────────────────────────────────────────────────────
+// ── terminal lines ────────────────────────────────────────────────────────────
 
-const C = {
-  bg:       "#0D1117",
-  surface:  "#161B22",
-  low:      "#141c24",
-  mid:      "#182028",
-  high:     "#222b33",
-  border:   "#21262D",
-  borderSoft:"#414752",
-  text:     "#dae3ee",
-  muted:    "#c0c7d4",
-  faint:    "#8b919d",
-  primary:  "#a2c9ff",
-  bright:   "#58a6ff",
-  secondary:"#d8baff",
-  tertiary: "#ffba42",
-  success:  "#4ade80",
-  error:    "#ffb4ab",
-  errorOn:  "#690005",
-};
-
-const SEV_STYLE: Record<string, React.CSSProperties> = {
-  P1: { background: C.error, color: C.errorOn },
-  P2: { border: `1px solid ${C.tertiary}`, color: C.tertiary },
-  P3: { border: `1px solid #da9600`, color: "#da9600" },
-  P4: { border: `1px solid ${C.faint}`, color: C.faint },
-};
-
-const CAT_COLORS = ["#ffb4ab","#a2c9ff","#ffba42","#d8baff","#4ade80","#8b919d"];
-const SVC_COLORS = ["#ffb4ab","#ffba42","#a2c9ff","#d8baff","#4ade80"];
-
-const STEPS = [
-  "ingesting","triaging","recalling","investigating",
-  "planning","awaiting_approval","executing","verifying",
-  "writing_postmortem","complete",
+const TERMINAL_LINES = [
+  { delay: 0,    text: "Initializing diagnostic protocols...", color: "#8b919d" },
+  { delay: 800,  text: "Fetching CloudWatch logs [payments-api]...", color: "#8b919d" },
+  { delay: 1800, text: "query_prometheus: error_rate=45.2% p99=8400ms", color: "#58A6FF" },
+  { delay: 2600, text: "inspect_docker_container: mem=99.8% restarts=3", color: "#58A6FF" },
+  { delay: 3400, text: "Pattern identified: Redis OOM — maxmemory exceeded", color: "#F2F0E8" },
+  { delay: 4200, text: "Recall: INC-20260418 (92% match) → FLUSHDB resolved in 2.1m", color: "#a2c9ff" },
+  { delay: 5000, text: "Executing flush_redis_cache [DESTRUCTIVE — awaiting approval]", color: "#ffba42" },
+  { delay: 5800, text: "✓ Approved via Slack. Executing...", color: "#4ade80" },
+  { delay: 6600, text: "Recovery confirmed. error_rate=0.2% p99=118ms", color: "#4ade80" },
+  { delay: 7200, text: "Post-mortem written. Embedded in Qdrant. MTTR: 2.4 min", color: "#4ade80" },
 ];
-const STEP_LABELS = ["INGEST","TRIAGE","RECALL","INVEST","PLAN","APPROVE","EXEC","VERIFY","PM","DONE"];
 
-const STATUS_COLORS: Record<string, string> = {
-  complete: "#4ade80",
-  escalated: "#ffb4ab",
-  investigating: "#a2c9ff",
-  recalling: "#a2c9ff",
-  awaiting_approval: "#ffba42",
-  executing: "#ffba42",
-  planning: "#ffba42",
-  triaging: "#c0c7d4",
-  verifying: "#c0c7d4",
-  writing_postmortem: "#4ade80",
+// ── design tokens ─────────────────────────────────────────────────────────────
+
+const T = {
+  bg:      "#0A0A0B",
+  surface: "#0e0e0f",
+  border:  "rgba(242, 240, 232, 0.08)",
+  text:    "#F2F0E8",
+  muted:   "#8b919d",
+  red:     "#FF4444",
+  blue:    "#58A6FF",
 };
 
-const TIER_ICON: Record<string, string> = {
-  READ: "👁",
-  REVERSIBLE: "🔄",
-  DESTRUCTIVE: "💥",
-};
+// ── Terminal ──────────────────────────────────────────────────────────────────
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-function SevBadge({ sev }: { sev: string }) {
-  const s = SEV_STYLE[sev] || {};
-  return (
-    <span style={{
-      ...s, padding: "1px 8px", borderRadius: 4,
-      fontSize: 11, fontWeight: 600, fontFamily: "JetBrains Mono, monospace",
-    }}>
-      {sev}
-    </span>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const color = STATUS_COLORS[status] || C.muted;
-  const label = status.replace(/_/g, " ").toUpperCase();
-  const pulse = ["awaiting_approval","executing","investigating","triaging","recalling"].includes(status);
-  return (
-    <span className={pulse ? "blink" : ""} style={{ color, fontSize: 11, fontFamily: "JetBrains Mono, monospace" }}>
-      {label}
-    </span>
-  );
-}
-
-function mttrOf(inc: Incident) {
-  if (!inc.resolved_at || !inc.created_at) return null;
-  return ((new Date(inc.resolved_at).getTime() - new Date(inc.created_at).getTime()) / 60000).toFixed(1);
-}
-
-function computeTrend(pts: { x: number; y: number }[]) {
-  const n = pts.length;
-  if (n < 2) return [] as { x: number; trend: number }[];
-  const sx = pts.reduce((s, p) => s + p.x, 0);
-  const sy = pts.reduce((s, p) => s + p.y, 0);
-  const sxy = pts.reduce((s, p) => s + p.x * p.y, 0);
-  const sxx = pts.reduce((s, p) => s + p.x * p.x, 0);
-  const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
-  const intercept = (sy - slope * sx) / n;
-  return pts.map(p => ({ x: p.x, trend: slope * p.x + intercept }));
-}
-
-// ── Stepper ───────────────────────────────────────────────────────────────────
-
-function Stepper({ status }: { status: string }) {
-  const cur = STEPS.indexOf(status);
-  return (
-    <div style={{ display: "flex", alignItems: "center", width: "100%", overflowX: "auto", paddingBottom: 6 }}>
-      {STEPS.map((step, i) => {
-        const done = i < cur || status === "complete";
-        const active = i === cur && status !== "complete";
-        return (
-          <div key={step} style={{ display: "contents" }}>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, flexShrink: 0, minWidth: 34 }}>
-              <div className={`stepper-node${done ? " done" : active ? " active" : ""}`} />
-              <span style={{
-                fontSize: 8, fontFamily: "JetBrains Mono, monospace",
-                color: done ? C.success : active ? C.tertiary : C.faint,
-                textAlign: "center", lineHeight: "11px",
-              }}>
-                {STEP_LABELS[i]}
-              </span>
-            </div>
-            {i < STEPS.length - 1 && (
-              <div className={`stepper-line${done ? " done" : ""}`} />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ── Detail Panel ──────────────────────────────────────────────────────────────
-
-function DetailPanel({
-  incidentId, onClose, onApprove,
-}: {
-  incidentId: string | null;
-  onClose: () => void;
-  onApprove: (id: string, approved: boolean) => void;
-}) {
-  const [state, setState] = useState<IncidentState | null>(null);
-  const [loading, setLoading] = useState(false);
+function Terminal() {
+  const [visible, setVisible] = useState<number[]>([]);
+  const ref = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   useEffect(() => {
-    if (!incidentId) { setState(null); return; }
-    let alive = true;
-    async function load() {
-      setLoading(true);
-      const s = await apiFetch<IncidentState>(`/api/incidents/${incidentId}`);
-      if (alive) { setState(s); setLoading(false); }
-    }
-    load();
-    const t = setInterval(load, 4000);
-    return () => { alive = false; clearInterval(t); };
-  }, [incidentId]);
-
-  if (!incidentId) {
-    return (
-      <div className="panel" style={{ padding: 24, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, opacity: 0.4 }}>
-        <span style={{ fontSize: 36 }}>←</span>
-        <span style={{ fontSize: 12, color: C.muted }}>Click an incident to inspect</span>
-      </div>
+    ref.current = TERMINAL_LINES.map((line, i) =>
+      setTimeout(() => setVisible(v => [...v, i]), line.delay)
     );
-  }
-
-  if (loading && !state) {
-    return (
-      <div className="panel" style={{ display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 13 }}>
-        Loading…
-      </div>
-    );
-  }
-
-  if (!state) {
-    return (
-      <div className="panel" style={{ padding: 20, color: C.muted, fontSize: 13 }}>
-        Initializing… (may take up to 30s for first run)
-      </div>
-    );
-  }
-
-  const conf = state.root_cause_confidence || 0;
-  const plan = state.action_plan || [];
-  const idx = state.current_action_index || 0;
-  const awaitingApproval = state.workflow_status === "awaiting_approval";
-
-  return (
-    <div className="panel" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 14, overflowY: "auto" }}>
-      {/* header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-            <SevBadge sev={state.severity} />
-            <span style={{ fontSize: 10, color: C.muted, fontFamily: "JetBrains Mono, monospace" }}>
-              {state.incident_id.slice(0, 20)}…
-            </span>
-          </div>
-          <div style={{ fontSize: 14, fontWeight: 600, color: C.text, lineHeight: "20px" }}>
-            {(state.incident_summary || "Incident").slice(0, 65)}
-          </div>
-        </div>
-        <button onClick={onClose} style={{ background: "none", border: "none", color: C.faint, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 2 }}>✕</button>
-      </div>
-
-      {/* confidence bar */}
-      {state.root_cause && (
-        <div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 5 }}>
-            <span style={{ color: C.muted }}>Root-cause confidence</span>
-            <span style={{ color: C.primary }}>{(conf * 100).toFixed(0)}%</span>
-          </div>
-          <div style={{ background: C.border, height: 4, borderRadius: 4, overflow: "hidden" }}>
-            <div style={{ background: C.bright, height: "100%", width: `${(conf * 100).toFixed(0)}%`, borderRadius: 4 }} />
-          </div>
-          <div style={{ marginTop: 5, fontSize: 11, color: C.muted, lineHeight: "15px" }}>
-            {state.root_cause.slice(0, 110)}
-          </div>
-        </div>
-      )}
-
-      {/* pipeline */}
-      <div>
-        <div style={{ fontSize: 10, color: C.muted, marginBottom: 6, fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.06em" }}>PIPELINE</div>
-        <Stepper status={state.workflow_status} />
-      </div>
-
-      {/* action plan */}
-      <div style={{ flexGrow: 1, overflowY: "auto" }}>
-        <div style={{ fontSize: 10, color: C.muted, marginBottom: 6, fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.06em" }}>ACTION PLAN</div>
-        {plan.length === 0 ? (
-          <div style={{ color: C.muted, fontSize: 12 }}>No actions planned yet.</div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-            {plan.map((a, i) => {
-              let dot = "⬜"; let textColor = C.muted;
-              let bg = C.low; let borderColor = C.border;
-              if (a.approved === true)         { dot = "✅"; textColor = C.success; }
-              else if (a.approved === false)    { dot = "❌"; textColor = C.error; }
-              else if (i < idx)                 { dot = "✅"; textColor = C.success; }
-              else if (i === idx && awaitingApproval) {
-                dot = "⏳"; textColor = C.tertiary;
-                bg = "rgba(255,186,66,0.07)"; borderColor = C.tertiary;
-              }
-              return (
-                <div key={i} style={{
-                  display: "flex", alignItems: "center", gap: 8,
-                  padding: "6px 10px", borderRadius: 4,
-                  background: bg, border: `1px solid ${borderColor}`, fontSize: 11,
-                }}>
-                  <span>{dot}</span>
-                  <span style={{ fontFamily: "JetBrains Mono, monospace", color: textColor, flexGrow: 1, fontSize: 10 }}>{a.tool_name}</span>
-                  <span title={a.classification}>{TIER_ICON[a.classification] || "❓"}</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {awaitingApproval && (
-          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-            <button
-              onClick={() => onApprove(state.incident_id, true)}
-              style={{
-                flex: 1, padding: "8px 0", borderRadius: 4, cursor: "pointer",
-                background: "rgba(74,222,128,0.1)", border: `1px solid ${C.success}`,
-                color: C.success, fontSize: 12, fontWeight: 600,
-              }}
-            >
-              ✓ APPROVE
-            </button>
-            <button
-              onClick={() => onApprove(state.incident_id, false)}
-              style={{
-                flex: 1, padding: "8px 0", borderRadius: 4, cursor: "pointer",
-                background: "rgba(255,180,171,0.1)", border: `1px solid ${C.error}`,
-                color: C.error, fontSize: 12, fontWeight: 600,
-              }}
-            >
-              ✕ REJECT
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── Stat Card ─────────────────────────────────────────────────────────────────
-
-function StatCard({ label, value, sub, subColor, accent }: {
-  label: string; value: string | number; sub: string; subColor: string; accent?: string;
-}) {
-  return (
-    <div className="panel" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", justifyContent: "space-between", position: "relative", overflow: "hidden" }}>
-      {accent && <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: accent }} />}
-      <div style={{ fontSize: 10, color: C.muted, fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.06em", paddingLeft: accent ? 12 : 0 }}>
-        {label.toUpperCase()}
-      </div>
-      <div style={{ display: "flex", alignItems: "flex-end", gap: 10, paddingLeft: accent ? 12 : 0 }}>
-        <div style={{ fontSize: 28, fontWeight: 700, color: accent || C.text, lineHeight: "36px" }}>{value}</div>
-        <div style={{ fontSize: 11, color: subColor, background: `${subColor}1a`, padding: "2px 8px", borderRadius: 4, marginBottom: 4, whiteSpace: "nowrap" }}>
-          {sub}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Dashboard ─────────────────────────────────────────────────────────────────
-
-export default function Dashboard() {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [incidents, setIncidents] = useState<Incident[]>([]);
-  const [memStats, setMemStats] = useState<MemoryStats | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [fireStatus, setFireStatus] = useState("");
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [lastUpdated, setLastUpdated] = useState("");
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const refresh = useCallback(async () => {
-    const [h, inc, mem] = await Promise.all([
-      apiFetch<HealthResponse>("/health"),
-      apiFetch<Incident[]>("/api/incidents?limit=30"),
-      apiFetch<MemoryStats>("/api/memory/stats"),
-    ]);
-    if (h) setHealth(h);
-    if (inc) setIncidents(inc);
-    if (mem) setMemStats(mem);
-    setLastUpdated(new Date().toUTCString().split(" ")[4] + " UTC");
+    return () => ref.current.forEach(clearTimeout);
   }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  return (
+    <div style={{
+      background: T.surface,
+      border: `1px solid ${T.border}`,
+      padding: "32px",
+      fontFamily: "JetBrains Mono, monospace",
+      fontSize: 12,
+      lineHeight: "20px",
+      display: "flex",
+      flexDirection: "column",
+      justifyContent: "flex-end",
+      height: "100%",
+      position: "relative",
+      overflow: "hidden",
+    }}>
+      <div style={{
+        position: "absolute", top: 0, left: 0, right: 0, height: 1,
+        background: `linear-gradient(to right, transparent, ${T.blue}88, transparent)`,
+      }} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {TERMINAL_LINES.map((line, i) => (
+          <div key={i} style={{
+            display: "flex", gap: 12, alignItems: "flex-start",
+            opacity: visible.includes(i) ? 1 : 0,
+            transition: "opacity 0.4s ease",
+          }}>
+            <span style={{ color: T.blue, flexShrink: 0 }}>&gt;</span>
+            <span style={{ color: line.color }}>{line.text}</span>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <span style={{ color: T.blue }}>&gt;</span>
+          <span style={{ color: T.blue, animation: "blink 1s step-end infinite" }}>_</span>
+        </div>
+      </div>
+      <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }`}</style>
+    </div>
+  );
+}
+
+// ── PulseDot ──────────────────────────────────────────────────────────────────
+
+function PulseDot({ color = T.red }: { color?: string }) {
+  return (
+    <>
+      <span style={{
+        display: "inline-block", width: 8, height: 8, background: color,
+        animation: "pulse 2s cubic-bezier(0.4,0,0.6,1) infinite",
+        flexShrink: 0,
+      }} />
+      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }`}</style>
+    </>
+  );
+}
+
+// ── Divider ───────────────────────────────────────────────────────────────────
+
+function Divider() {
+  return <div style={{ height: 1, background: T.border, width: "100%" }} />;
+}
+
+// ── Section header ────────────────────────────────────────────────────────────
+
+function SectionNum({ num, label }: { num: string; label: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 48 }}>
+      <span style={{
+        fontFamily: "JetBrains Mono, monospace", fontSize: 11, letterSpacing: "0.05em",
+        color: T.muted, textTransform: "uppercase",
+      }}>{num}</span>
+      <div style={{ width: 32, height: 1, background: `${T.muted}4d` }} />
+      <span style={{
+        fontFamily: "JetBrains Mono, monospace", fontSize: 11, letterSpacing: "0.05em",
+        color: T.muted, textTransform: "uppercase",
+      }}>{label}</span>
+    </div>
+  );
+}
+
+// ── CodeLine ──────────────────────────────────────────────────────────────────
+
+function CodeLine({ prompt, text, color = T.muted }: { prompt?: boolean; text: string; color?: string }) {
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "flex-start", fontFamily: "JetBrains Mono, monospace", fontSize: 12, lineHeight: "20px" }}>
+      {prompt && <span style={{ color: T.blue, flexShrink: 0 }}>&gt;</span>}
+      <span style={{ color }}>{text}</span>
+    </div>
+  );
+}
+
+// ── FeatureBlock ──────────────────────────────────────────────────────────────
+
+function FeatureBlock({ label, value, sub }: { label: string; value: string; sub: string }) {
+  return (
+    <div style={{ borderTop: `1px solid ${T.border}`, paddingTop: 24 }}>
+      <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, letterSpacing: "0.05em", color: T.muted, textTransform: "uppercase", marginBottom: 8 }}>
+        {label}
+      </div>
+      <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 24, fontWeight: 700, color: T.text, letterSpacing: "-0.02em", marginBottom: 4 }}>
+        {value}
+      </div>
+      <div style={{ fontSize: 14, color: T.muted, lineHeight: "20px" }}>{sub}</div>
+    </div>
+  );
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+export default function LandingPage() {
+  const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (!autoRefresh) return;
-    timerRef.current = setInterval(refresh, 8000);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [autoRefresh, refresh]);
+    const handler = () => setScrolled(window.scrollY > 20);
+    window.addEventListener("scroll", handler);
+    return () => window.removeEventListener("scroll", handler);
+  }, []);
 
-  async function fireIncident() {
-    setFireStatus("Firing…");
-    const data = await apiPost<{ incident_id: string }>("/webhook/alert", {
-      source: "custom", alert_name: "RedisOOM", severity: "P1", service: "payments-api",
-      description: "Redis out of memory — OOM command not allowed when used memory > maxmemory. payments-api error rate 45%, p99 latency 8.4s. Restart count: 3.",
-      labels: { env: "production", region: "us-east-1", team: "payments" },
-    });
-    if (data) { setFireStatus(data.incident_id); setSelected(data.incident_id); setTimeout(refresh, 800); }
-    else setFireStatus("Error — is the API running on port 8000?");
-  }
-
-  async function handleApprove(id: string, approved: boolean) {
-    await apiPost(`/api/incidents/${id}/approve?approved=${approved}`);
-    setTimeout(refresh, 1200);
-  }
-
-  // ── derived stats ─────────────────────────────────────────────────────────
-
-  const active = incidents.filter(i => !["complete","escalated"].includes(i.workflow_status));
-  const resolved = incidents.filter(i => i.workflow_status === "complete");
-  const p1Active = active.filter(i => i.severity === "P1");
-  const total = incidents.length;
-  const resolvedPct = total > 0 ? Math.round((resolved.length / total) * 100) : 0;
-
-  const series = (memStats?.mttr_series || []).sort((a, b) =>
-    new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-  );
-  const avgMttr = series.length > 0
-    ? (series.reduce((s, x) => s + x.mttr, 0) / series.length).toFixed(1)
-    : null;
-
-  let mttrDelta: string | null = null;
-  let mttrGood = true;
-  if (series.length >= 4) {
-    const half = Math.floor(series.length / 2);
-    const first = series.slice(0, half).reduce((s, x) => s + x.mttr, 0) / half;
-    const last = series.slice(-half).reduce((s, x) => s + x.mttr, 0) / half;
-    const pct = first > 0 ? ((first - last) / first * 100) : 0;
-    mttrGood = pct >= 0;
-    mttrDelta = `${Math.abs(pct).toFixed(0)}% ${pct >= 0 ? "faster" : "slower"} vs first half`;
-  }
-
-  // ── chart data ────────────────────────────────────────────────────────────
-
-  const scatterData = series.map((p, i) => ({ x: i + 1, y: Number(p.mttr.toFixed(2)) }));
-  const trendPts = computeTrend(scatterData);
-  const combinedData = scatterData.map((pt, i) => ({ ...pt, trend: trendPts[i]?.trend }));
-
-  const catEntries = Object.entries(memStats?.categories || {}).sort((a, b) => b[1] - a[1]);
-  const donutData = catEntries.map(([name, value], i) => ({ name, value, fill: CAT_COLORS[i % CAT_COLORS.length] }));
-  const svcEntries = Object.entries(memStats?.services || {}).sort((a, b) => b[1] - a[1]).slice(0, 6);
-  const maxSvc = Math.max(...svcEntries.map(([, v]) => v), 1);
-
-  // ─────────────────────────────────────────────────────────────────────────
+  const px = "clamp(24px, 5vw, 64px)";
+  const maxW = 1440;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: C.bg, overflow: "hidden" }}>
+    <div style={{ background: T.bg, color: T.text, minHeight: "100vh", fontFamily: "Geist, sans-serif", overflowX: "hidden" }}>
 
-      {/* Nav */}
+      {/* ── Nav ── */}
       <nav style={{
-        background: C.mid, borderBottom: `1px solid ${C.border}`,
-        height: 54, flexShrink: 0, display: "flex", alignItems: "center",
-        justifyContent: "space-between", padding: "0 24px",
+        position: "fixed", top: 0, left: 0, right: 0, zIndex: 50,
+        height: 80, display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: `0 ${px}`,
+        background: scrolled ? "rgba(10,10,11,0.97)" : "transparent",
+        borderBottom: scrolled ? `1px solid ${T.border}` : "1px solid transparent",
+        transition: "background 0.3s, border-color 0.3s",
+        backdropFilter: scrolled ? "blur(8px)" : "none",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 18 }}>🚨</span>
-          <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>SIREN</span>
-          <span style={{ fontSize: 12, color: C.muted, marginLeft: 4 }}>Self-Improving Incident Response Engine</span>
+          <PulseDot />
+          <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 20, fontWeight: 700, letterSpacing: "-0.03em" }}>
+            SIREN
+          </span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 20, fontSize: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, color: health ? C.success : C.error }}>
-            <div className={`live-dot${health ? " green" : ""}`} />
-            {health ? "API Online" : "API Offline"}
-          </div>
-          {health && (
-            <span style={{ color: C.muted }}>
-              🗄 Qdrant: <strong style={{ color: C.secondary }}>{health.qdrant_incidents}</strong>
-            </span>
-          )}
-          <div style={{
-            display: "flex", alignItems: "center", gap: 6,
-            padding: "3px 10px", background: C.high, border: `1px solid ${C.borderSoft}`, borderRadius: 20, fontSize: 11,
-          }}>
-            <div className="live-dot" />
-            <span style={{ color: C.error }}>SYSTEM ACTIVE</span>
-          </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 40 }}>
+          <a href="https://github.com/RohanMulay1/siren" target="_blank" rel="noreferrer"
+            style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, letterSpacing: "0.05em", color: T.muted, textDecoration: "none", textTransform: "uppercase" }}
+            onMouseEnter={e => (e.currentTarget.style.color = T.text)}
+            onMouseLeave={e => (e.currentTarget.style.color = T.muted)}>
+            GitHub ↗
+          </a>
+
+          <Link href="/dashboard" style={{
+            fontFamily: "JetBrains Mono, monospace", fontSize: 11, letterSpacing: "0.05em",
+            color: T.text, textDecoration: "none", textTransform: "uppercase",
+            border: `1px solid ${T.border}`, padding: "8px 16px",
+            transition: "background 0.2s, color 0.2s",
+          }}
+            onMouseEnter={e => { e.currentTarget.style.background = T.text; e.currentTarget.style.color = T.bg; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = T.text; }}>
+            Live Demo →
+          </Link>
         </div>
       </nav>
 
-      {/* Main */}
-      <main style={{ flexGrow: 1, overflow: "auto", padding: "14px 24px", display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* ── Hero ── */}
+      <section style={{
+        minHeight: "100vh", display: "flex", alignItems: "center",
+        padding: `120px ${px} 80px`,
+        borderBottom: `1px solid ${T.border}`,
+      }}>
+        <div style={{ maxWidth: maxW, margin: "0 auto", width: "100%", display: "grid", gridTemplateColumns: "7fr 5fr", gap: 48, alignItems: "center" }}>
 
-        {/* Stat cards */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, flexShrink: 0 }}>
-          <StatCard accent={C.error} label="Active Incidents" value={active.length}
-            sub={p1Active.length > 0 ? `${p1Active.length} P1 CRITICAL` : active.length > 0 ? "IN PROGRESS" : "ALL CLEAR"}
-            subColor={C.error} />
-          <StatCard label="Avg MTTR" value={avgMttr !== null ? `${avgMttr} min` : "—"}
-            sub={mttrDelta || "Not enough data"} subColor={mttrGood ? C.success : C.error} />
-          <StatCard accent={C.secondary} label="Incidents in Memory" value={memStats?.total ?? "—"}
-            sub="🗄 Qdrant" subColor={C.secondary} />
-          <StatCard label="Resolved" value={`${resolved.length}/${total}`}
-            sub={`${resolvedPct}% resolved`} subColor={C.success} />
-        </div>
-
-        {/* Incident table + detail */}
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12, flexShrink: 0, height: 356 }}>
-
-          {/* Table */}
-          <div className="panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
-            <div style={{
-              padding: "10px 16px", borderBottom: `1px solid ${C.border}`,
-              background: C.low, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0,
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div className="live-dot" />
-                <span style={{ fontSize: 14, fontWeight: 600 }}>Live Incidents</span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 48 }}>
+            <div>
+              <div style={{
+                display: "flex", alignItems: "center", gap: 12, marginBottom: 24,
+                fontFamily: "JetBrains Mono, monospace", fontSize: 11, letterSpacing: "0.08em",
+                color: T.muted, textTransform: "uppercase",
+              }}>
+                <span style={{ display: "block", width: 32, height: 1, background: `${T.muted}4d` }} />
+                Autonomous Incident Response
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <button onClick={fireIncident} style={{
-                  background: C.error, color: C.errorOn, border: "none", cursor: "pointer",
-                  padding: "5px 14px", borderRadius: 4, fontSize: 12, fontWeight: 700,
-                  boxShadow: `0 2px 12px rgba(255,180,171,0.25)`,
-                }}>
-                  🔥 Fire Demo
-                </button>
-                {fireStatus && (
-                  <span style={{ fontSize: 11, color: C.muted, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {fireStatus}
-                  </span>
-                )}
-              </div>
+
+              <h1 style={{
+                fontSize: "clamp(56px, 8vw, 120px)", fontWeight: 700, lineHeight: 0.9,
+                letterSpacing: "-0.05em", margin: 0, marginBottom: 32,
+              }}>
+                Your on-call<br />engineer never<br />sleeps.
+              </h1>
+
+              <p style={{ fontSize: 18, lineHeight: "28px", color: T.muted, maxWidth: 520, margin: 0 }}>
+                SIREN detects, investigates, and resolves production incidents autonomously
+                using advanced multi-step reasoning and tool-use — while you sleep.
+              </p>
             </div>
 
-            <div style={{ overflowY: "auto", flexGrow: 1 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ background: C.high, position: "sticky", top: 0, zIndex: 1 }}>
-                    {["Sev","Incident ID","Service","Status","Root Cause","MTTR"].map(h => (
-                      <th key={h} style={{
-                        padding: "7px 12px", textAlign: "left", fontSize: 10, fontWeight: 500,
-                        color: C.muted, fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.06em",
-                        borderBottom: `1px solid ${C.border}`,
-                      }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {incidents.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} style={{ padding: "24px 12px", textAlign: "center", color: C.muted, fontSize: 13 }}>
-                        No incidents yet — click <strong>Fire Demo</strong> to start.
-                      </td>
-                    </tr>
-                  ) : incidents.map(inc => {
-                    const isSelected = selected === inc.incident_id;
-                    const mttr = mttrOf(inc);
-                    return (
-                      <tr key={inc.incident_id} onClick={() => setSelected(isSelected ? null : inc.incident_id)}
-                        style={{
-                          cursor: "pointer",
-                          background: isSelected ? C.high : "transparent",
-                          borderLeft: isSelected ? `2px solid ${C.bright}` : "2px solid transparent",
-                          transition: "background 0.1s",
-                        }}
-                        onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLTableRowElement).style.background = C.mid; }}
-                        onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLTableRowElement).style.background = "transparent"; }}
-                      >
-                        <td style={{ padding: "8px 12px" }}><SevBadge sev={inc.severity} /></td>
-                        <td style={{ padding: "8px 12px", fontSize: 11, fontFamily: "JetBrains Mono, monospace", color: C.text }}>
-                          {inc.incident_id.slice(0, 22)}…
-                        </td>
-                        <td style={{ padding: "8px 12px", fontSize: 12, color: C.muted }}>{inc.affected_service}</td>
-                        <td style={{ padding: "8px 12px" }}><StatusBadge status={inc.workflow_status} /></td>
-                        <td style={{ padding: "8px 12px", fontSize: 12, color: C.muted, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {inc.root_cause?.slice(0, 55) || "—"}
-                        </td>
-                        <td style={{ padding: "8px 12px", fontSize: 11, fontFamily: "JetBrains Mono, monospace", color: mttr ? C.text : C.faint }}>
-                          {mttr ? `${mttr}m` : "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Detail */}
-          <DetailPanel incidentId={selected} onClose={() => setSelected(null)} onApprove={handleApprove} />
-        </div>
-
-        {/* Charts row */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, flexGrow: 1, minHeight: 240 }}>
-
-          {/* MTTR scatter */}
-          <div className="panel" style={{ padding: 16, display: "flex", flexDirection: "column" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-              <span style={{ fontSize: 10, color: C.muted, fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.06em" }}>
-                MTTR SELF-IMPROVEMENT — QDRANT MEMORY EFFECT
-              </span>
-              {mttrDelta && mttrGood && (
-                <span style={{ background: C.high, border: `1px solid ${C.border}`, padding: "2px 10px", borderRadius: 4, fontSize: 11, color: C.success }}>
-                  📉 {mttrDelta}
-                </span>
-              )}
-            </div>
-            <div style={{ flexGrow: 1, minHeight: 0 }}>
-              {combinedData.length === 0 ? (
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: C.muted, fontSize: 12 }}>
-                  No data — run <code style={{ background: C.high, padding: "1px 6px", borderRadius: 3, margin: "0 4px" }}>python scripts/seed_qdrant.py</code>
+            <div style={{ display: "flex", gap: 48, paddingTop: 32, borderTop: `1px solid ${T.border}`, width: "fit-content" }}>
+              <div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 24, fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 4 }}>
+                  &lt; 3 min
                 </div>
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={combinedData} margin={{ top: 4, right: 10, bottom: 20, left: 0 }}>
-                    <XAxis dataKey="x" type="number" name="Incident #" tick={{ fill: C.faint, fontSize: 10 }}
-                      label={{ value: "Incident #", position: "insideBottom", offset: -8, fill: C.faint, fontSize: 10 }} />
-                    <YAxis tick={{ fill: C.faint, fontSize: 10 }}
-                      label={{ value: "MTTR (min)", angle: -90, position: "insideLeft", offset: 8, fill: C.faint, fontSize: 10 }} />
-                    <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 11 }}
-                      formatter={(val: unknown, name: unknown) => [`${(val as number).toFixed(2)} min`, name === "y" ? "MTTR" : "Trend"]} />
-                    <Scatter dataKey="y" fill={C.primary} opacity={0.85} />
-                    <Line dataKey="trend" dot={false} stroke={C.success} strokeWidth={1.5} strokeDasharray="5 3" />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              )}
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, letterSpacing: "0.05em", color: T.muted, textTransform: "uppercase" }}>
+                  MTTR
+                </div>
+              </div>
+              <div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 24, fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 4 }}>
+                  100%
+                </div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, letterSpacing: "0.05em", color: T.muted, textTransform: "uppercase" }}>
+                  Autonomous
+                </div>
+              </div>
+              <div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 24, fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 4 }}>
+                  0
+                </div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, letterSpacing: "0.05em", color: T.muted, textTransform: "uppercase" }}>
+                  Pages sent
+                </div>
+              </div>
             </div>
           </div>
 
-          {/* Memory breakdown */}
-          <div className="panel" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
-            <span style={{ fontSize: 10, color: C.muted, fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.06em" }}>
-              INCIDENT MEMORY (QDRANT) — {memStats?.total ?? 0} TOTAL
-            </span>
-            {(memStats?.total ?? 0) === 0 ? (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", flexGrow: 1, color: C.muted, fontSize: 12 }}>
-                Empty — run <code style={{ background: C.high, padding: "1px 6px", borderRadius: 3, margin: "0 4px" }}>python scripts/seed_qdrant.py</code>
+          {/* Terminal */}
+          <div style={{ height: 500 }}>
+            <Terminal />
+          </div>
+        </div>
+      </section>
+
+      {/* ── Section 01: DETECT ── */}
+      <section style={{ padding: `96px ${px}`, borderBottom: `1px solid ${T.border}` }}>
+        <div style={{ maxWidth: maxW, margin: "0 auto", width: "100%" }}>
+          <SectionNum num="01" label="Detect" />
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 80, alignItems: "start" }}>
+            <div>
+              <h2 style={{ fontSize: "clamp(32px, 4vw, 56px)", fontWeight: 700, letterSpacing: "-0.03em", lineHeight: 1.05, margin: "0 0 24px" }}>
+                Alerts in.<br />Context out.
+              </h2>
+              <p style={{ fontSize: 16, lineHeight: "26px", color: T.muted, margin: "0 0 48px" }}>
+                SIREN ingests webhooks from any monitoring tool — PagerDuty, CloudWatch,
+                Prometheus, Grafana — and immediately begins building context. Triage happens
+                in seconds, not after a groggy engineer logs in at 3am.
+              </p>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 32 }}>
+                <FeatureBlock label="Sources" value="Any webhook" sub="Prometheus, CloudWatch, PagerDuty, custom" />
+                <FeatureBlock label="Triage" value="&lt; 2s" sub="Severity + service classification via Claude Sonnet" />
               </div>
-            ) : (
-              <div style={{ display: "flex", gap: 16, flexGrow: 1, alignItems: "center", minHeight: 0 }}>
-                {/* Donut */}
-                <div style={{ width: "46%", position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <ResponsiveContainer width="100%" height={180}>
-                    <PieChart>
-                      <Pie data={donutData} cx="50%" cy="50%" innerRadius="60%" outerRadius="85%" dataKey="value" paddingAngle={2}>
-                        {donutData.map((e, i) => <Cell key={i} fill={e.fill} />)}
-                      </Pie>
-                      <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 11 }} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div style={{ position: "absolute", textAlign: "center", pointerEvents: "none" }}>
-                    <div style={{ fontSize: 22, fontWeight: 700, color: C.text }}>{memStats?.total}</div>
-                    <div style={{ fontSize: 10, color: C.faint }}>Total</div>
+            </div>
+
+            <div style={{
+              background: T.surface, border: `1px solid ${T.border}`, padding: 32,
+              fontFamily: "JetBrains Mono, monospace", fontSize: 12, lineHeight: "20px",
+            }}>
+              <div style={{ color: T.muted, marginBottom: 20, fontSize: 11, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                POST /webhook/alert
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <CodeLine text='{' color={T.text} />
+                <CodeLine text='  "source": "prometheus",' color="#a2c9ff" />
+                <CodeLine text='  "alert_name": "RedisOOMKiller",' color="#a2c9ff" />
+                <CodeLine text='  "severity": "critical",' color="#a2c9ff" />
+                <CodeLine text='  "service": "payments-api",' color="#a2c9ff" />
+                <CodeLine text='  "description": "OOM killer triggered 3x"' color="#a2c9ff" />
+                <CodeLine text='}' color={T.text} />
+              </div>
+              <Divider />
+              <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 8 }}>
+                <CodeLine prompt text="Triage complete — P1 | payments-api" color="#4ade80" />
+                <CodeLine prompt text="Confidence: 0.94" color={T.muted} />
+                <CodeLine prompt text="Routing to investigation..." color={T.muted} />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Section 02: INVESTIGATE ── */}
+      <section style={{ padding: `96px ${px}`, borderBottom: `1px solid ${T.border}` }}>
+        <div style={{ maxWidth: maxW, margin: "0 auto", width: "100%" }}>
+          <SectionNum num="02" label="Investigate" />
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 80, alignItems: "start" }}>
+            <div style={{
+              background: T.surface, border: `1px solid ${T.border}`, padding: 32,
+            }}>
+              <div style={{ color: T.muted, marginBottom: 20, fontSize: 11, fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                Investigation loop — Claude Opus 4.7
+              </div>
+
+              {[
+                { tool: "query_prometheus", result: "error_rate=45.2%, p99=8400ms", tier: "READ" },
+                { tool: "fetch_cloudwatch_logs", result: "'OOM command not allowed' ×847", tier: "READ" },
+                { tool: "inspect_docker_container", result: "mem=99.8%, restarts=3", tier: "READ" },
+                { tool: "recall_similar_incidents", result: "INC-20260418 (92%) → FLUSHDB resolved", tier: "READ" },
+              ].map((step, i) => (
+                <div key={i} style={{
+                  display: "flex", gap: 16, paddingBottom: 20, marginBottom: 20,
+                  borderBottom: i < 3 ? `1px solid ${T.border}` : "none",
+                }}>
+                  <div style={{
+                    width: 28, height: 28, background: `${T.blue}1a`,
+                    border: `1px solid ${T.blue}4d`, display: "flex", alignItems: "center",
+                    justifyContent: "center", flexShrink: 0,
+                    fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: T.blue,
+                  }}>
+                    {i + 1}
+                  </div>
+                  <div>
+                    <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: T.blue, marginBottom: 4 }}>
+                      {step.tool}
+                    </div>
+                    <div style={{ fontSize: 12, color: T.muted, lineHeight: "18px" }}>{step.result}</div>
+                  </div>
+                  <div style={{ marginLeft: "auto", flexShrink: 0 }}>
+                    <span style={{
+                      fontFamily: "JetBrains Mono, monospace", fontSize: 10, padding: "2px 8px",
+                      border: `1px solid ${T.border}`, color: T.muted, textTransform: "uppercase",
+                    }}>
+                      {step.tier}
+                    </span>
                   </div>
                 </div>
+              ))}
 
-                {/* Service bars */}
-                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 9, justifyContent: "center" }}>
-                  {svcEntries.map(([svc, cnt], i) => (
-                    <div key={svc}>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
-                        <span style={{ color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 110 }}>{svc}</span>
-                        <span style={{ color: C.faint, marginLeft: 6 }}>{cnt}</span>
-                      </div>
-                      <div style={{ background: C.border, height: 4, borderRadius: 3, overflow: "hidden" }}>
-                        <div style={{ background: SVC_COLORS[i % SVC_COLORS.length], height: "100%", width: `${(cnt / maxSvc * 100).toFixed(0)}%`, borderRadius: 3 }} />
-                      </div>
-                    </div>
-                  ))}
+              <div style={{ marginTop: 8, padding: 16, background: `${T.blue}0d`, border: `1px solid ${T.blue}33` }}>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: T.blue, marginBottom: 4 }}>ROOT CAUSE — 96% CONFIDENCE</div>
+                <div style={{ fontSize: 12, color: T.muted, lineHeight: "18px" }}>
+                  Redis exceeded maxmemory (512MB). Auth token TTL removed in deploy at 14:32 UTC.
                 </div>
               </div>
-            )}
+            </div>
+
+            <div>
+              <h2 style={{ fontSize: "clamp(32px, 4vw, 56px)", fontWeight: 700, letterSpacing: "-0.03em", lineHeight: 1.05, margin: "0 0 24px" }}>
+                Multi-step<br />root cause<br />analysis.
+              </h2>
+              <p style={{ fontSize: 16, lineHeight: "26px", color: T.muted, margin: "0 0 48px" }}>
+                Claude Opus runs a structured investigation loop — querying metrics, logs,
+                containers, and git history in parallel. Each tool result is scanned for
+                prompt injection before entering the model context.
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 32 }}>
+                <FeatureBlock label="Model" value="Opus 4.7" sub="Maximum reasoning capability for root cause" />
+                <FeatureBlock label="Tools" value="8 built-in" sub="Prometheus, CloudWatch, Docker, GitHub, Postgres" />
+                <FeatureBlock label="Guardrails" value="Injection scan" sub="Every tool output sanitized before LLM context" />
+                <FeatureBlock label="Memory" value="Qdrant" sub="92% match recall cuts investigation from 6→2 calls" />
+              </div>
+            </div>
           </div>
         </div>
+      </section>
 
-        {/* Footer */}
-        <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: C.muted, cursor: "pointer" }}>
-            <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} style={{ accentColor: C.bright }} />
-            Auto-refresh every 8s
-          </label>
-          <span style={{ fontSize: 11, color: C.faint, fontFamily: "JetBrains Mono, monospace" }}>
-            {lastUpdated || "—"}
-          </span>
+      {/* ── Section 03: APPROVE ── */}
+      <section style={{ padding: `96px ${px}`, borderBottom: `1px solid ${T.border}` }}>
+        <div style={{ maxWidth: maxW, margin: "0 auto", width: "100%" }}>
+          <SectionNum num="03" label="Approve" />
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 80, alignItems: "start" }}>
+            <div>
+              <h2 style={{ fontSize: "clamp(32px, 4vw, 56px)", fontWeight: 700, letterSpacing: "-0.03em", lineHeight: 1.05, margin: "0 0 24px" }}>
+                Human-in-the-<br />loop. Not<br />human-in-the-way.
+              </h2>
+              <p style={{ fontSize: 16, lineHeight: "26px", color: T.muted, margin: "0 0 24px" }}>
+                READ and REVERSIBLE actions run automatically. DESTRUCTIVE actions — cache
+                flushes, draining load balancer nodes, database migrations — pause the
+                workflow and send a Slack approval request with full context.
+              </p>
+              <p style={{ fontSize: 16, lineHeight: "26px", color: T.muted, margin: "0 0 48px" }}>
+                One click. Graph resumes from checkpoint. Zero configuration.
+              </p>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 24 }}>
+                {[
+                  { tier: "READ", desc: "Auto-approved", color: T.blue },
+                  { tier: "REVERSIBLE", desc: "Auto if confidence > 85%", color: "#ffba42" },
+                  { tier: "DESTRUCTIVE", desc: "Always needs Slack", color: T.red },
+                ].map(t => (
+                  <div key={t.tier} style={{ borderTop: `2px solid ${t.color}`, paddingTop: 16 }}>
+                    <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: t.color, marginBottom: 8 }}>{t.tier}</div>
+                    <div style={{ fontSize: 13, color: T.muted, lineHeight: "18px" }}>{t.desc}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Slack approval mockup */}
+            <div style={{ border: `1px solid ${T.border}`, background: T.surface }}>
+              <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 6, height: 6, background: T.red, animation: "pulse 2s ease infinite" }} />
+                <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  #incidents — Slack
+                </span>
+              </div>
+
+              <div style={{ padding: 20 }}>
+                {/* Bot message */}
+                <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                  <div style={{
+                    width: 32, height: 32, background: T.red, flexShrink: 0,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontFamily: "JetBrains Mono, monospace", fontSize: 12, fontWeight: 700, color: "#fff",
+                  }}>S</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 2 }}>SIREN</div>
+                    <div style={{ fontSize: 12, color: T.muted, marginBottom: 12, lineHeight: "18px" }}>
+                      Action 1 of 2 requires approval
+                    </div>
+
+                    <div style={{ background: "#161B22", border: `1px solid ${T.border}`, padding: 16, fontSize: 12 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+                        {[["Incident", "INC-20260520-001"], ["Severity", "P1"], ["Service", "payments-api"], ["Risk", "DESTRUCTIVE"]].map(([k, v]) => (
+                          <div key={k}>
+                            <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: T.muted, textTransform: "uppercase", marginBottom: 2 }}>{k}</div>
+                            <div style={{ color: k === "Risk" ? T.red : T.text, fontWeight: k === "Risk" ? 600 : 400 }}>{v}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ borderTop: `1px solid ${T.border}`, paddingTop: 12, marginBottom: 12 }}>
+                        <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: T.muted, textTransform: "uppercase", marginBottom: 6 }}>Action</div>
+                        <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: T.blue }}>flush_redis_cache</div>
+                        <div style={{ fontSize: 11, color: T.muted, marginTop: 4, lineHeight: "16px" }}>
+                          Redis at 99.8% — OOM killer triggered 3×. Flush restores payments-api immediately.
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button style={{
+                          flex: 1, padding: "8px 0", background: "rgba(74,222,128,0.12)",
+                          border: "1px solid #4ade80", color: "#4ade80",
+                          fontFamily: "JetBrains Mono, monospace", fontSize: 11, cursor: "pointer",
+                        }}>
+                          APPROVE
+                        </button>
+                        <button style={{
+                          flex: 1, padding: "8px 0", background: "rgba(255,68,68,0.08)",
+                          border: `1px solid ${T.border}`, color: T.muted,
+                          fontFamily: "JetBrains Mono, monospace", fontSize: 11, cursor: "pointer",
+                        }}>
+                          REJECT
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-      </main>
+      </section>
+
+      {/* ── Section 04: LEARN ── */}
+      <section style={{ padding: `96px ${px}`, borderBottom: `1px solid ${T.border}` }}>
+        <div style={{ maxWidth: maxW, margin: "0 auto", width: "100%" }}>
+          <SectionNum num="04" label="Learn" />
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 80, alignItems: "start" }}>
+            <div style={{
+              background: T.surface, border: `1px solid ${T.border}`, padding: 32,
+            }}>
+              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 24 }}>
+                MTTR self-improvement — Qdrant memory effect
+              </div>
+
+              {/* Fake MTTR chart */}
+              <div style={{ position: "relative", height: 160, marginBottom: 24 }}>
+                <svg viewBox="0 0 400 120" style={{ width: "100%", height: "100%" }}>
+                  {/* Grid lines */}
+                  {[0, 30, 60, 90, 120].map(y => (
+                    <line key={y} x1={0} y1={y} x2={400} y2={y} stroke={T.border} strokeWidth={1} />
+                  ))}
+                  {/* Scatter dots (MTTR decreasing) */}
+                  {[
+                    [20, 95], [50, 88], [80, 82], [110, 90], [140, 72],
+                    [170, 65], [200, 58], [230, 70], [260, 45], [290, 38],
+                    [320, 42], [350, 28], [380, 20],
+                  ].map(([x, y], i) => (
+                    <circle key={i} cx={x} cy={y} r={4} fill="#a2c9ff" opacity={0.85} />
+                  ))}
+                  {/* Trend line */}
+                  <line x1={20} y1={95} x2={380} y2={18} stroke="#4ade80" strokeWidth={1.5} strokeDasharray="6 3" opacity={0.8} />
+                </svg>
+                <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: T.muted }}>Incident #1</span>
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: T.muted }}>Incident #13</span>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 16, alignItems: "center", justifyContent: "center" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#a2c9ff" }} />
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: T.muted }}>Actual MTTR</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ width: 16, height: 1, background: "#4ade80" }} />
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: T.muted }}>Trend (OLS)</span>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 24, padding: 16, background: `rgba(74,222,128,0.06)`, border: `1px solid rgba(74,222,128,0.2)` }}>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#4ade80", marginBottom: 4 }}>
+                  68% faster after 10 incidents
+                </div>
+                <div style={{ fontSize: 12, color: T.muted, lineHeight: "18px" }}>
+                  9.2 min cold → 2.9 min with Qdrant memory recall
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h2 style={{ fontSize: "clamp(32px, 4vw, 56px)", fontWeight: 700, letterSpacing: "-0.03em", lineHeight: 1.05, margin: "0 0 24px" }}>
+                Gets faster<br />every time<br />it fires.
+              </h2>
+              <p style={{ fontSize: 16, lineHeight: "26px", color: T.muted, margin: "0 0 24px" }}>
+                After every resolved incident, SIREN writes a structured post-mortem and
+                embeds it in Qdrant. The next time a similar incident fires, semantic search
+                surfaces the most relevant past resolution — and Claude tests that hypothesis first.
+              </p>
+              <p style={{ fontSize: 16, lineHeight: "26px", color: T.muted, margin: "0 0 48px" }}>
+                Cold start: 6 tool calls, 9 minutes. With memory: 2 tool calls, 2.4 minutes.
+                The improvement compounds with every incident.
+              </p>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 32 }}>
+                <FeatureBlock label="Storage" value="Qdrant" sub="384-dim cosine similarity, payload-indexed" />
+                <FeatureBlock label="Embeddings" value="MiniLM" sub="Local inference — no API cost per incident" />
+                <FeatureBlock label="Recall" value="Top 5" sub="0.75 similarity threshold, filtered by service" />
+                <FeatureBlock label="Effect" value="−68% MTTR" sub="Measured over 13 incidents in demo data" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Tech Stack ── */}
+      <section style={{ padding: `80px ${px}`, borderBottom: `1px solid ${T.border}` }}>
+        <div style={{ maxWidth: maxW, margin: "0 auto", width: "100%" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 32, flexWrap: "wrap" }}>
+            <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: T.muted, textTransform: "uppercase", letterSpacing: "0.08em", flexShrink: 0 }}>
+              Built with
+            </div>
+            <div style={{ flex: 1, height: 1, background: T.border }} />
+            {["Anthropic Claude", "LangGraph", "Qdrant", "FastAPI", "Slack SDK", "Docker"].map(tech => (
+              <div key={tech} style={{
+                fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: T.muted,
+                padding: "6px 16px", border: `1px solid ${T.border}`,
+                transition: "color 0.2s, border-color 0.2s",
+              }}
+                onMouseEnter={e => { e.currentTarget.style.color = T.text; e.currentTarget.style.borderColor = `${T.text}33`; }}
+                onMouseLeave={e => { e.currentTarget.style.color = T.muted; e.currentTarget.style.borderColor = T.border; }}>
+                {tech}
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── CTA ── */}
+      <section style={{ padding: `120px ${px}`, borderBottom: `1px solid ${T.border}` }}>
+        <div style={{ maxWidth: maxW, margin: "0 auto", width: "100%", textAlign: "center" }}>
+          <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: T.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 24, display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
+            <span style={{ display: "block", width: 32, height: 1, background: `${T.muted}4d` }} />
+            Open source · MIT License
+            <span style={{ display: "block", width: 32, height: 1, background: `${T.muted}4d` }} />
+          </div>
+          <h2 style={{ fontSize: "clamp(40px, 6vw, 80px)", fontWeight: 700, letterSpacing: "-0.04em", lineHeight: 1, margin: "0 0 32px" }}>
+            Stop being<br />paged at 3am.
+          </h2>
+          <p style={{ fontSize: 18, color: T.muted, marginBottom: 48, lineHeight: "28px" }}>
+            Deploy SIREN in minutes. Watch it resolve its first incident autonomously.
+          </p>
+          <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
+            <Link href="/dashboard" style={{
+              display: "inline-block", padding: "14px 40px",
+              background: T.text, color: T.bg,
+              fontFamily: "JetBrains Mono, monospace", fontSize: 12, letterSpacing: "0.05em",
+              textDecoration: "none", textTransform: "uppercase", fontWeight: 700,
+              transition: "opacity 0.2s",
+            }}
+              onMouseEnter={e => (e.currentTarget.style.opacity = "0.85")}
+              onMouseLeave={e => (e.currentTarget.style.opacity = "1")}>
+              Live Demo →
+            </Link>
+            <a href="https://github.com/RohanMulay1/siren" target="_blank" rel="noreferrer" style={{
+              display: "inline-block", padding: "14px 40px",
+              border: `1px solid ${T.border}`, color: T.text,
+              fontFamily: "JetBrains Mono, monospace", fontSize: 12, letterSpacing: "0.05em",
+              textDecoration: "none", textTransform: "uppercase",
+              transition: "border-color 0.2s",
+            }}
+              onMouseEnter={e => (e.currentTarget.style.borderColor = `${T.text}66`)}
+              onMouseLeave={e => (e.currentTarget.style.borderColor = T.border)}>
+              GitHub ↗
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Footer ── */}
+      <footer style={{ padding: `48px ${px}`, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 32 }}>
+        <div>
+          <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 20, fontWeight: 700, letterSpacing: "-0.03em", marginBottom: 8 }}>
+            SIREN
+          </div>
+          <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            Open source · MIT
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, alignItems: "flex-end", fontFamily: "JetBrains Mono, monospace", fontSize: 12 }}>
+          {[
+            { label: "GitHub", href: "https://github.com/RohanMulay1/siren" },
+            { label: "Anthropic Claude", href: "https://anthropic.com" },
+            { label: "LangGraph", href: "https://langchain-ai.github.io/langgraph/" },
+            { label: "Qdrant", href: "https://qdrant.tech" },
+          ].map(link => (
+            <a key={link.label} href={link.href} target="_blank" rel="noreferrer"
+              style={{ color: T.muted, textDecoration: "none", transition: "color 0.2s" }}
+              onMouseEnter={e => (e.currentTarget.style.color = T.text)}
+              onMouseLeave={e => (e.currentTarget.style.color = T.muted)}>
+              {link.label}
+            </a>
+          ))}
+        </div>
+      </footer>
+
     </div>
   );
 }

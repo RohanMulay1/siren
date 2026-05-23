@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>SIREN | Autonomous Incident Response</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&amp;family=Geist:wght@400;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "surface-tint": "#c8c7bf",
+                        "on-error-container": "#ffdad6",
+                        "on-surface-variant": "#c8c7be",
+                        "tertiary-fixed-dim": "#a2c9ff",
+                        "on-surface": "#e5e2e3",
+                        "on-tertiary-fixed": "#001c38",
+                        "inverse-surface": "#e5e2e3",
+                        "tertiary-fixed": "#d3e4ff",
+                        "surface-bright": "#3a393a",
+                        "primary-fixed-dim": "#c8c7bf",
+                        "outline": "#919189",
+                        "on-primary": "#30312c",
+                        "on-tertiary-fixed-variant": "#004882",
+                        "on-secondary": "#680009",
+                        "background": "#0A0A0B", /* Overridden per spec */
+                        "tertiary-container": "#d3e4ff",
+                        "on-secondary-fixed": "#410004",
+                        "primary": "#F2F0E8", /* Overridden per spec */
+                        "on-background": "#F2F0E8", /* Overridden per spec */
+                        "error-container": "#93000a",
+                        "on-secondary-fixed-variant": "#930012",
+                        "on-primary-fixed": "#1b1c17",
+                        "surface-container": "#201f20",
+                        "primary-container": "#e4e2db",
+                        "on-tertiary": "#00315c",
+                        "primary-fixed": "#e4e2db",
+                        "outline-variant": "#474741",
+                        "surface-container-high": "#2a2a2b",
+                        "surface-container-lowest": "#0e0e0f",
+                        "tertiary": "#ffffff",
+                        "secondary-fixed": "#ffdad7",
+                        "on-tertiary-container": "#0066b4",
+                        "on-primary-fixed-variant": "#474741",
+                        "surface-container-low": "#1c1b1c",
+                        "secondary": "#ffb3ad",
+                        "on-secondary-container": "#ffc2bd",
+                        "surface-dim": "#131314",
+                        "secondary-fixed-dim": "#ffb3ad",
+                        "on-primary-container": "#65655e",
+                        "error": "#ffb4ab",
+                        "inverse-on-surface": "#313031",
+                        "surface-variant": "#353436",
+                        "surface-container-highest": "#353436",
+                        "on-error": "#690005",
+                        "surface": "#0A0A0B",
+                        "inverse-primary": "#5f5f59",
+                        "secondary-container": "#b60119",
+                        "siren-red": "#FF4444",
+                        "siren-blue": "#58A6FF",
+                        "siren-divider": "rgba(242, 240, 232, 0.08)"
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0px", /* Strict flat */
+                        "lg": "0px",
+                        "xl": "0px",
+                        "full": "0px"
+                    },
+                    spacing: {
+                        "unit": "8px",
+                        "section-padding": "4rem",
+                        "container-max": "1440px",
+                        "gutter": "1px"
+                    },
+                    fontFamily: {
+                        "mono-stat": ["JetBrains Mono", "monospace"],
+                        "mono-label": ["JetBrains Mono", "monospace"],
+                        "body-md": ["Geist", "sans-serif"],
+                        "headline-lg-mobile": ["Geist", "sans-serif"],
+                        "headline-lg": ["Geist", "sans-serif"],
+                        "display-xl": ["Geist", "sans-serif"],
+                        "headline-md": ["Geist", "sans-serif"],
+                        "body-lg": ["Geist", "sans-serif"]
+                    },
+                    fontSize: {
+                        "mono-stat": ["24px", { lineHeight: "24px", letterSpacing: "-0.02em", fontWeight: "700" }],
+                        "mono-label": ["12px", { lineHeight: "16px", letterSpacing: "0.05em", fontWeight: "500" }],
+                        "body-md": ["16px", { lineHeight: "24px", letterSpacing: "0em", fontWeight: "400" }],
+                        "headline-lg-mobile": ["40px", { lineHeight: "44px", letterSpacing: "-0.04em", fontWeight: "700" }],
+                        "headline-lg": ["64px", { lineHeight: "60px", letterSpacing: "-0.04em", fontWeight: "700" }],
+                        "display-xl": ["120px", { lineHeight: "100px", letterSpacing: "-0.05em", fontWeight: "700" }],
+                        "headline-md": ["32px", { lineHeight: "36px", letterSpacing: "-0.02em", fontWeight: "600" }],
+                        "body-lg": ["18px", { lineHeight: "28px", letterSpacing: "0em", fontWeight: "400" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body {
+            background-color: #0A0A0B;
+            color: #F2F0E8;
+            -webkit-font-smoothing: antialiased;
+        }
+        .border-divider {
+            border-color: rgba(242, 240, 232, 0.08);
+        }
+        .pulse-dot {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .5; }
+        }
+    </style>
+</head>
+<body class="min-h-screen font-body-md text-body-md overflow-x-hidden selection:bg-primary selection:text-background">
+<!-- TopNavBar -->
+<nav class="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-section-padding h-20 bg-background/95 backdrop-blur-sm border-b border-divider">
+<div class="flex items-center gap-2">
+<span class="w-2 h-2 bg-siren-red block pulse-dot"></span>
+<span class="font-mono-stat text-mono-stat text-primary uppercase tracking-tighter">SIREN</span>
+</div>
+<div class="hidden md:flex gap-8">
+<a class="text-on-surface-variant hover:text-primary transition-colors font-mono-label text-mono-label uppercase" href="#">GitHub ↗</a>
+</div>
+<a class="border border-outline-variant/10 px-4 py-2 text-primary font-mono-label text-mono-label uppercase hover:bg-primary hover:text-on-primary transition-all duration-200" href="#">Live Demo →</a>
+</nav>
+<!-- SECTION 01: HERO -->
+<section class="w-full min-h-[1024px] flex items-center pt-20 border-b border-divider px-section-padding relative">
+<div class="max-w-[1440px] mx-auto w-full grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+<div class="col-span-1 lg:col-span-7 flex flex-col justify-center space-y-12 pr-0 lg:pr-12">
+<div>
+<p class="font-mono-label text-mono-label uppercase tracking-widest text-on-surface-variant mb-6 flex items-center gap-3">
+<span class="w-8 h-[1px] bg-on-surface-variant/30 block"></span>
+                        AUTONOMOUS INCIDENT RESPONSE
+                    </p>
+<h1 class="hidden md:block font-display-xl text-display-xl text-primary mb-8 tracking-tighter leading-[0.9]">
+                        Your on-call<br/>engineer never<br/>sleeps.
+                    </h1>
+<h1 class="md:hidden font-headline-lg-mobile text-headline-lg-mobile text-primary mb-6 tracking-tighter">
+                        Your on-call<br/>engineer never<br/>sleeps.
+                    </h1>
+<p class="font-body-lg text-body-lg text-on-surface-variant max-w-2xl leading-relaxed">
+                        SIREN detects, investigates, and resolves production incidents autonomously using advanced reasoning and tool-use capabilities.
+                    </p>
+</div>
+<div class="flex gap-12 pt-8 border-t border-divider w-fit">
+<div>
+<div class="font-mono-stat text-mono-stat text-primary mb-1">&lt; 3 min</div>
+<div class="font-mono-label text-mono-label text-on-surface-variant uppercase">MTTR</div>
+</div>
+<div>
+<div class="font-mono-stat text-mono-stat text-primary mb-1">100%</div>
+<div class="font-mono-label text-mono-label text-on-surface-variant uppercase">Auto-resolved</div>
+</div>
+</div>
+</div>
+<div class="col-span-1 lg:col-span-5 h-[400px] lg:h-[600px] bg-[#0e0e0f] border border-divider p-8 font-mono-label text-mono-label flex flex-col justify-end relative overflow-hidden">
+<div class="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-siren-blue/0 via-siren-blue/50 to-siren-blue/0"></div>
+<div class="space-y-4 text-on-surface-variant">
+<div class="flex gap-3"><span class="text-siren-blue">&gt;</span> <span>Initializing diagnostic protocols...</span></div>
+<div class="flex gap-3"><span class="text-siren-blue">&gt;</span> <span>Fetching CloudWatch logs...</span></div>
+<div class="flex gap-3 opacity-50"><span class="text-siren-blue">&gt;</span> <span>Analyzing trace data [pid: 49201]</span></div>
+<div class="flex gap-3"><span class="text-siren-blue">&gt;</span> <span class="text-primary">Pattern identified: DB connection timeout</span></div>
+<div class="flex gap-3"><span class="text-siren-blue">&gt;</span> <span>Executing recovery play_04_db_restart.sh</span></div>
+<div class="flex gap-3 mt-8 pt-4 border-t border-divider"><span class="text-siren-blue">&gt;</span> <span class="text-[#00FF00]">Recovery confirmed. Alerts resolved.</span></div>
+<div class="flex gap-3 animate-pulse"><span class="text-siren-blue">_</span></div>
+</div>
+</div>
+</div>
+</section>
+<!-- Footer -->
+<footer class="w-full py-section-padding px-section-padding grid grid-cols-1 md:grid-cols-2 gap-unit bg-background border-t border-divider">
+<div>
+<span class="font-mono-stat text-mono-stat text-primary uppercase tracking-tighter">SIREN</span>
+<p class="font-mono-label text-mono-label text-on-surface-variant mt-2 uppercase">Open source · MIT</p>
+</div>
+<div class="flex flex-col gap-2 md:items-end font-mono-label text-mono-label">
+<a class="text-on-surface-variant hover:text-primary transition-colors" href="#">GitHub</a>
+<a class="text-on-surface-variant hover:text-primary transition-colors" href="#">Anthropic Claude</a>
+<a class="text-on-surface-variant hover:text-primary transition-colors" href="#">LangGraph</a>
+<a class="text-on-surface-variant hover:text-primary transition-colors" href="#">Qdrant</a>
+</div>
+</footer>
+</body></html>
