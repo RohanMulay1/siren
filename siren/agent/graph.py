@@ -1,5 +1,10 @@
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
+try:
+    from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+    _REDIS_SAVER_AVAILABLE = True
+except ImportError:
+    _REDIS_SAVER_AVAILABLE = False
 
 from .state import IncidentState
 from .nodes import (
@@ -16,7 +21,7 @@ from .routing import (
 )
 
 
-def build_graph(use_redis: bool = False, redis_url: str | None = None):  # noqa: ARG001
+def build_graph(use_redis: bool = False, redis_url: str | None = None):
     """
     Build and compile the SIREN LangGraph state machine.
 
@@ -97,8 +102,13 @@ def build_graph(use_redis: bool = False, redis_url: str | None = None):  # noqa:
         },
     )
 
+    if use_redis and redis_url and _REDIS_SAVER_AVAILABLE:
+        checkpointer = AsyncRedisSaver.from_conn_string(redis_url)
+    else:
+        checkpointer = MemorySaver()
+
     return builder.compile(
-        checkpointer=MemorySaver(),
+        checkpointer=checkpointer,
         interrupt_after=["request_approval"],
     )
 
