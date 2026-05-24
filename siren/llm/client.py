@@ -51,4 +51,4 @@ async def chat_complete(
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
 
-    return await client.chat.completions.create(**kwargs)
+    return await client.chat.completions.create(**kwargs, timeout=30.0)
