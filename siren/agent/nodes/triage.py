@@ -34,28 +34,26 @@ async def run(state: IncidentState) -> dict:
         f"Raw alert: {json.dumps(raw, default=str)[:2000]}"
     )
 
-    resp = await chat_complete(
-        model=settings.model_triage,
-        system=TRIAGE_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=512,
-    )
-
     try:
+        resp = await chat_complete(
+            model=settings.model_triage,
+            system=TRIAGE_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=512,
+        )
         text = resp.choices[0].message.content.strip()
-        # Strip any accidental markdown fences
         if "```" in text:
             text = text.split("```")[1]
             if text.startswith("json"):
                 text = text[4:]
         data = json.loads(text)
-    except (json.JSONDecodeError, IndexError, AttributeError):
+    except Exception:
         data = {
-            "severity": "P2",
+            "severity": "P1",
             "affected_service": state["affected_service"],
             "affected_region": state["affected_region"],
             "incident_summary": state["incident_summary"],
-            "confidence": 0.4,
+            "confidence": 0.6,
             "is_noise": False,
         }
 

@@ -176,7 +176,7 @@ async def run(state: IncidentState) -> dict:
             ),
         })
         try:
-            synth_resp = client.chat.completions.create(
+            synth_resp = await client.chat.completions.create(
                 model=settings.model_investigate,
                 messages=messages,
                 tools=[to_openai_finish_tool(FINISH_TOOL)],
