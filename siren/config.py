@@ -13,13 +13,13 @@ class Settings(BaseSettings):
     # Model selection
     # Groq models: llama-3.3-70b-versatile (best), llama-3.1-8b-instant (fast/cheap)
     # OpenRouter models: meta-llama/llama-3.3-70b-instruct, meta-llama/llama-3.1-8b-instruct
-    model_triage: str = "meta-llama/llama-3.3-70b-instruct"
-    model_investigate: str = "meta-llama/llama-3.3-70b-instruct"
-    model_plan: str = "meta-llama/llama-3.3-70b-instruct"
-    model_guard: str = "meta-llama/llama-3.1-8b-instruct"
-    model_execute: str = "meta-llama/llama-3.1-8b-instruct"
-    model_verify: str = "meta-llama/llama-3.3-70b-instruct"
-    model_postmortem: str = "meta-llama/llama-3.3-70b-instruct"
+    model_triage: str = "llama-3.3-70b-versatile"
+    model_investigate: str = "llama-3.3-70b-versatile"
+    model_plan: str = "llama-3.3-70b-versatile"
+    model_guard: str = "llama-3.1-8b-instant"
+    model_execute: str = "llama-3.1-8b-instant"
+    model_verify: str = "llama-3.3-70b-versatile"
+    model_postmortem: str = "llama-3.3-70b-versatile"
 
     # Infrastructure
     redis_url: str = "redis://localhost:6379"
