@@ -1,10 +1,5 @@
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-try:
-    from langgraph.checkpoint.redis.aio import AsyncRedisSaver
-    _REDIS_SAVER_AVAILABLE = True
-except ImportError:
-    _REDIS_SAVER_AVAILABLE = False
 
 from .state import IncidentState
 from .nodes import (
@@ -102,13 +97,8 @@ def build_graph(use_redis: bool = False, redis_url: str | None = None):
         },
     )
 
-    if use_redis and redis_url and _REDIS_SAVER_AVAILABLE:
-        checkpointer = AsyncRedisSaver.from_conn_string(redis_url)
-    else:
-        checkpointer = MemorySaver()
-
     return builder.compile(
-        checkpointer=checkpointer,
+        checkpointer=MemorySaver(),
         interrupt_after=["request_approval"],
     )
 

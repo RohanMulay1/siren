@@ -38,7 +38,7 @@ async def list_incidents(limit: int = 20):
 async def get_incident(incident_id: str):
     graph = get_graph()
     config = {"configurable": {"thread_id": incident_id}}
-    state = graph.get_state(config)
+    state = await graph.aget_state(config)
     if state is None or not state.values:
         raise HTTPException(status_code=404, detail="Incident not found")
     return state.values
